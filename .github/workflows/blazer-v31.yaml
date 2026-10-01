@@ -261,6 +261,29 @@ jobs:
                 return None
 
 
+        def magisk_display(magisk):
+            if magisk.get('kind') == 'release':
+                label = magisk['tag']
+            else:
+                label = 'ci-' + magisk['commit'][:8]
+            # Keep upstream release tags recognizable and filenames/Actions outputs safe.
+            label = re.sub(r'[^A-Za-z0-9._-]', '-', label).strip('.-')[:60]
+            if not label:
+                raise RuntimeError('Empty pixincreate display version')
+            return label
+
+
+        def rename_public_otas(version, magisk, flavors):
+            result = {}
+            for flavor, original in flavors.items():
+                name = (f'blazer-{version}-pixincreate-{magisk_display(magisk)}.zip'
+                        if flavor == 'pixincreate' else f'blazer-{version}-rootless.zip')
+                for suffix in ('', '.csig'):
+                    (DIST / (original + suffix)).rename(DIST / (name + suffix))
+                result[flavor] = name
+            return result
+
+
         def build(version, selected_magisk):
             for key in ('PASSPHRASE_AVB', 'PASSPHRASE_OTA', 'KEY_AVB_BASE64', 'KEY_OTA_BASE64', 'CERT_OTA_BASE64'):
                 if not os.environ.get(key):
@@ -292,6 +315,7 @@ jobs:
         ''', env=env)
             flavors = dict(line.split('\t') for line in (DIST / 'flavors.tsv').read_text().splitlines())
             (DIST / 'flavors.tsv').unlink()
+            flavors = rename_public_otas(version, magisk, flavors)
             files = {}
             for name in flavors.values():
                 for file in (name, name + '.csig'):
@@ -365,11 +389,19 @@ jobs:
             # Hash the actual verified APK: catches replaced assets under the same tag,
             # while avoiding duplicate OTAs when a CI APK is later released unchanged.
             selected_magisk = resolve_magisk()
+            display_version = magisk_display(selected_magisk[1])
+            output('artifact_name', f'blazer-{version}-pixincreate-{display_version}')
             apk_sha256 = selected_magisk[1]['apk_sha256']
             if not re.fullmatch(r'[0-9a-f]{64}', apk_sha256):
                 raise RuntimeError('Invalid verified APK digest')
-            tag = f'blazer-{version}-pixin-{apk_sha256}'
+            # Short technical tag; the manifest still checks the FULL hash on every reuse.
+            tag = f'blazer-{version}-pixin-{apk_sha256[:12]}'
             release = release_by_tag(tag) if publish else None
+            if publish and release is None:
+                legacy_tag = f'blazer-{version}-pixin-{apk_sha256}'
+                release = release_by_tag(legacy_tag)
+                if release is not None:
+                    tag = legacy_tag
             manifest = existing_manifest(release, version) if release else None
             if manifest and manifest.get('magisk', {}).get('apk_sha256') != apk_sha256:
                 if not release['draft']:
@@ -389,7 +421,7 @@ jobs:
                         notes = DIST / 'release-notes.txt'
                         notes.write_text(f'GrapheneOS {version} for blazer.\n\npixincreate source: {manifest["magisk"]["url"]}\n\nBuilder: {PIN}\n\nUse only with your matching AVB and OTA signing keys.\n')
                         gh('release', 'create', tag, '--repo', REPO, '--target', 'main', '--draft',
-                           '--title', f'Blazer GrapheneOS {version}', '--notes-file', str(notes))
+                           '--title', f'Blazer | GrapheneOS {version} | pixincreate {display_version}', '--notes-file', str(notes))
                         notes.unlink()
                     # Replace partial draft uploads only. Never overwrite published firmware.
                     gh('release', 'upload', tag, '--repo', REPO, '--clobber', *[str(p) for p in sorted(DIST.iterdir())])
@@ -408,7 +440,7 @@ jobs:
       if: always() && steps.build.outputs.built == 'true'
       uses: actions/upload-artifact@v4
       with:
-        name: blazer-ota-${{ github.run_id }}
+        name: ${{ steps.build.outputs.artifact_name }}
         path: builder/dist/
         if-no-files-found: error
         compression-level: 0
