@@ -1,0 +1,461 @@
+name: Blazer - automatic GrapheneOS with newest pixincreate
+'on':
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish releases and OTA feeds (leave OFF for a test build)
+        type: boolean
+        required: true
+        default: false
+      ota_version:
+        description: 'GrapheneOS version: latest or an exact 10-digit version'
+        type: string
+        required: true
+        default: latest
+  schedule:
+  - cron: 23 4 * * *
+permissions:
+  contents: read
+concurrency:
+  group: blazer-ota-publisher
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      deploy: ${{ steps.build.outputs.deploy }}
+    env:
+      OTA_VERSION: ${{ inputs.ota_version || 'latest' }}
+      PUBLISH: ${{ github.event_name == 'schedule' && 'true' || (inputs.publish && 'true' || 'false') }}
+      GH_PROMPT_DISABLED: '1'
+    steps:
+    - name: Check out inspected upstream build scripts
+      uses: actions/checkout@v4
+      with:
+        repository: schnatterer/rooted-graphene
+        ref: 80ff7950d1eb397c3c44c462a19570c1b7aaa8df
+        path: builder
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Check out this OTA repository
+      uses: actions/checkout@v4
+      with:
+        ref: main
+        path: ota
+        fetch-depth: 0
+    - name: Install build prerequisites
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq curl git unzip openssh-client python3 gh
+        docker version
+    - name: Build, sign, and optionally publish
+      id: build
+      working-directory: builder
+      shell: bash
+      env:
+        PASSPHRASE_AVB: ${{ secrets.PASSPHRASE_AVB }}
+        PASSPHRASE_OTA: ${{ secrets.PASSPHRASE_OTA }}
+        KEY_AVB_BASE64: ${{ secrets.KEY_AVB_BASE64 }}
+        KEY_OTA_BASE64: ${{ secrets.KEY_OTA_BASE64 }}
+        CERT_OTA_BASE64: ${{ secrets.CERT_OTA_BASE64 }}
+        GITHUB_TOKEN: ${{ github.token }}
+        MAGISK_DOWNLOAD_TOKEN: ${{ secrets.MAGISK_DOWNLOAD_TOKEN }}
+      run: |
+        set -euo pipefail
+        python3 - <<'PYTHON'
+        import hashlib
+        import json
+        import os
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+        import urllib.parse
+        import zipfile
+        from datetime import datetime, timezone
+        from pathlib import Path
+
+        REPO = os.environ.get('GITHUB_REPOSITORY', '')
+        PIXIN = 'pixincreate/Magisk'
+        PIN = '80ff7950d1eb397c3c44c462a19570c1b7aaa8df'
+        SCRIPT_SHA = '54bde95262d1f927f93851db70cbcd35ce6311f3'
+        ROOT = Path.cwd()
+        DIST = ROOT / 'dist'
+
+
+        def run(*args, **kwargs):
+            return subprocess.run(args, check=True, **kwargs)
+
+
+        def gh(*args, download=False):
+            env = os.environ.copy()
+            env['GH_TOKEN'] = (env.get('MAGISK_DOWNLOAD_TOKEN') or env['GITHUB_TOKEN']) if download else env['GITHUB_TOKEN']
+            return run('gh', *args, env=env, capture_output=True).stdout
+
+
+        def api(endpoint, download=False):
+            return json.loads(gh('api', endpoint, download=download))
+
+
+        def pages(endpoint, download=False):
+            result = []
+            for page in range(1, 101):
+                sep = '&' if '?' in endpoint else '?'
+                data = api(f'{endpoint}{sep}per_page=100&page={page}', download)
+                if isinstance(data, dict):
+                    data = data.get('workflow_runs', data.get('artifacts', []))
+                result.extend(data)
+                if len(data) < 100:
+                    return result
+            raise RuntimeError('Pagination limit exceeded; refusing an incomplete version search')
+
+
+        def public_download(url, dest):
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme != 'https' or parsed.hostname not in {'github.com', 'releases.grapheneos.org'}:
+                raise RuntimeError('Unexpected download origin')
+            # Never send GitHub tokens to public downloads or redirect targets.
+            run('curl', '--fail', '--silent', '--show-error', '--location', '--retry', '3',
+                '--proto', '=https', '--proto-redir', '=https', '--output', str(dest), url)
+
+
+        def sha(path):
+            with open(path, 'rb') as f:
+                return hashlib.file_digest(f, 'sha256').hexdigest()
+
+
+        def checked_digest(path, digest):
+            if not re.fullmatch(r'sha256:[0-9a-fA-F]{64}', digest or ''):
+                raise RuntimeError('Missing SHA-256 verification data')
+            if sha(path) != digest.split(':')[1].lower():
+                raise RuntimeError('Downloaded file failed SHA-256 verification')
+
+
+        def select_release(releases):
+            candidates = [r for r in releases if not r['draft'] and r.get('published_at')]
+            if not candidates:
+                return None
+            r = max(candidates, key=lambda x: x['published_at'])
+            assets = {a['name']: a for a in r['assets']}
+            asset = next((assets[n] for n in (f"Magisk-{r['tag_name']}.apk", 'app-release.apk') if n in assets), None)
+            if asset is None:
+                raise RuntimeError('Newest pixincreate release has no supported APK; refusing an older fallback')
+            return {'kind': 'release', 'date': r['published_at'], 'release': r, 'asset': asset}
+
+
+        def select_ci(runs, get_artifacts):
+            trusted = sorted((r for r in runs
+                              if r['conclusion'] == 'success'
+                              and r['head_branch'] == 'master'
+                              and r['event'] in {'push', 'workflow_dispatch'}
+                              and r['path'] == '.github/workflows/build.yml'
+                              and (r.get('head_repository') or {}).get('full_name') == PIXIN),
+                             key=lambda r: r['created_at'], reverse=True)
+            for r in trusted:
+                artifacts = get_artifacts(r['id'])
+                matches = [a for a in artifacts if a['name'] == r['head_sha'] and not a['expired']]
+                if matches:
+                    a = max(matches, key=lambda a: a['created_at'])
+                    return {'kind': 'ci', 'date': a['created_at'], 'run': r, 'artifact': a}
+            return None
+
+
+        def resolve_magisk():
+            rel = select_release(pages(f'repos/{PIXIN}/releases', True))
+            runs = pages(f'repos/{PIXIN}/actions/workflows/build.yml/runs?branch=master&status=success', True)
+            ci = select_ci(runs, lambda rid: pages(f'repos/{PIXIN}/actions/runs/{rid}/artifacts', True))
+            candidates = [c for c in (rel, ci) if c]
+            if not candidates:
+                raise RuntimeError('No downloadable pixincreate build found')
+            chosen = max(candidates, key=lambda c: c['date'])
+            tmp = ROOT / '.tmp'
+            tmp.mkdir(exist_ok=True)
+            apk = tmp / 'selected.apk'
+            if chosen['kind'] == 'ci':
+                a, r = chosen['artifact'], chosen['run']
+                archive = tmp / 'magisk-artifact.zip'
+                try:
+                    archive.write_bytes(gh('api', f'repos/{PIXIN}/actions/artifacts/{a["id"]}/zip', download=True))
+                except subprocess.CalledProcessError as exc:
+                    raise RuntimeError('Cannot download the newer developer build. If GitHub denies cross-repository access, add MAGISK_DOWNLOAD_TOKEN with public Actions read access. No older APK was substituted.') from exc
+                checked_digest(archive, a.get('digest'))
+                with zipfile.ZipFile(archive) as z:
+                    matches = [i for i in z.infolist() if not i.is_dir() and Path(i.filename).name == 'app-release.apk']
+                    if len(matches) != 1 or matches[0].file_size > 200_000_000:
+                        raise RuntimeError('Unexpected developer artifact layout')
+                    with z.open(matches[0]) as src, apk.open('wb') as dst:
+                        shutil.copyfileobj(src, dst)
+                info = {'kind': 'developer-build', 'commit': r['head_sha'], 'run_id': r['id'],
+                        'artifact_id': a['id'], 'url': r['html_url'], 'date': chosen['date']}
+                label = f'ci-{r["head_sha"][:12]}-{a["id"]}'
+            else:
+                r, a = chosen['release'], chosen['asset']
+                public_download(a['browser_download_url'], apk)
+                digest = a.get('digest')
+                if not digest:
+                    sums = next((x for x in r['assets'] if x['name'] == 'SHA256SUMS'), None)
+                    if sums is None:
+                        raise RuntimeError('Newest release lacks checksum data')
+                    sums_file = tmp / 'magisk-checksums'
+                    public_download(sums['browser_download_url'], sums_file)
+                    hashes = [line.split()[0] for line in sums_file.read_text().splitlines()
+                              if len(line.split()) == 2 and line.split()[1].lstrip('*') == a['name']]
+                    if len(hashes) != 1:
+                        raise RuntimeError('APK checksum is missing or ambiguous')
+                    digest = 'sha256:' + hashes[0]
+                checked_digest(apk, digest)
+                info = {'kind': 'release', 'tag': r['tag_name'], 'prerelease': r['prerelease'],
+                        'asset_id': a['id'], 'url': r['html_url'], 'date': chosen['date']}
+                label = f'asset-{a["id"]}'
+            info['apk_sha256'] = sha(apk)
+            apk.rename(tmp / f'pixincreate-{label}.apk')
+            print('Selected pixincreate:', json.dumps(info), flush=True)
+            return label, info
+
+
+        def release_by_tag(tag):
+            # Missing release is not confused with authentication/network errors.
+            return next((r for r in pages(f'repos/{REPO}/releases') if r['tag_name'] == tag), None)
+
+
+        def valid_manifest(manifest, release, version):
+            if manifest.get('schema') != 1 or manifest.get('device') != 'blazer' or manifest.get('grapheneos') != version:
+                return False
+            files = manifest.get('files', {})
+            if len(files) != 4:
+                return False
+            assets = {a['name']: a for a in release['assets']}
+            expected = set()
+            for flavor in ('pixincreate', 'rootless'):
+                name = manifest.get('flavors', {}).get(flavor, '')
+                if not re.fullmatch(r'blazer-[A-Za-z0-9._-]+\.zip', name):
+                    return False
+                expected.update((name, name + '.csig'))
+            if set(files) != expected:
+                return False
+            for name, meta in files.items():
+                a = assets.get(name)
+                if not a or a.get('state') != 'uploaded' or a['size'] != meta['size']:
+                    return False
+                if meta['size'] <= 0 or not re.fullmatch(r'[0-9a-f]{64}', meta['sha256']):
+                    return False
+                if a.get('digest') and a['digest'].lower() != 'sha256:' + meta['sha256']:
+                    return False
+            return True
+
+
+        def existing_manifest(release, version):
+            assets = {a['name']: a for a in release['assets']}
+            if 'BUILD_MANIFEST.json' not in assets:
+                return None
+            data = gh('api', f'repos/{REPO}/releases/assets/{assets["BUILD_MANIFEST.json"]["id"]}',
+                      '-H', 'Accept: application/octet-stream')
+            try:
+                manifest = json.loads(data)
+                return manifest if valid_manifest(manifest, release, version) else None
+            except (ValueError, KeyError, TypeError, AttributeError):
+                return None
+
+
+        def build(version, selected_magisk):
+            for key in ('PASSPHRASE_AVB', 'PASSPHRASE_OTA', 'KEY_AVB_BASE64', 'KEY_OTA_BASE64', 'CERT_OTA_BASE64'):
+                if not os.environ.get(key):
+                    raise RuntimeError('Missing repository secret: ' + key)
+            script_sha = run('git', 'hash-object', 'rooted-ota.sh', capture_output=True, text=True).stdout.strip()
+            if script_sha != SCRIPT_SHA:
+                raise RuntimeError('Pinned builder script checksum mismatch')
+            label, magisk = selected_magisk
+            env = os.environ.copy()
+            env.update(DEVICE_ID='blazer', MAGISK_PREINIT_DEVICE='sda10', MAGISK_VERSION=label,
+                       OTA_VERSION=version, SKIP_MAGISK='true', SKIP_PIXINCREATE='false',
+                       SKIP_ROOTLESS='false', SKIP_CLEANUP='true', DEBUG='',
+                       FORCE_BUILD='true', GITHUB_REPO='', TARGET_REPO=REPO)
+            # Upstream code cannot publish. It receives no repository-write/download token.
+            for key in ('GITHUB_TOKEN', 'GH_TOKEN', 'MAGISK_DOWNLOAD_TOKEN'):
+                env.pop(key, None)
+            run('bash', '-euo', 'pipefail', '-c', '''
+        source rooted-ota.sh
+        createRootedOta
+        GITHUB_REPO="$TARGET_REPO"
+        createOtaServerData
+        mkdir -p dist
+        for flavor in "${!POTENTIAL_ASSETS[@]}"; do
+          asset="${POTENTIAL_ASSETS[$flavor]}"
+          cp -- ".tmp/$asset" ".tmp/$asset.csig" dist/
+          printf '%s\\t%s\\n' "$flavor" "$asset" >> dist/flavors.tsv
+        done
+        cp -- "$CERT_OTA" dist/ota.crt
+        ''', env=env)
+            flavors = dict(line.split('\t') for line in (DIST / 'flavors.tsv').read_text().splitlines())
+            (DIST / 'flavors.tsv').unlink()
+            files = {}
+            for name in flavors.values():
+                for file in (name, name + '.csig'):
+                    path = DIST / file
+                    files[file] = {'size': path.stat().st_size, 'sha256': sha(path)}
+            manifest = {'schema': 1, 'device': 'blazer', 'grapheneos': version,
+                        'builder_commit': PIN, 'magisk': magisk, 'flavors': flavors, 'files': files}
+            (DIST / 'BUILD_MANIFEST.json').write_text(json.dumps(manifest, indent=2) + '\n')
+            (DIST / 'SHA256SUMS').write_text(''.join(f'{sha(p)}  {p.name}\n' for p in sorted(DIST.iterdir()) if p.is_file() and p.name != 'SHA256SUMS'))
+            output('built', 'true')
+            return manifest
+
+
+        def output(name, value):
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                f.write(f'{name}={value}\n')
+
+
+        def sync_feed(manifest, tag):
+            repo_dir = Path(os.environ['GITHUB_WORKSPACE']) / 'ota'
+            def git(*args):
+                return run('git', '-C', str(repo_dir), *args, capture_output=True, text=True).stdout.strip()
+            git('config', 'user.name', 'github-actions[bot]')
+            git('config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com')
+            remote = git('ls-remote', '--heads', 'origin', 'gh-pages')
+            if remote:
+                git('fetch', 'origin', 'gh-pages:refs/remotes/origin/gh-pages')
+                git('switch', '--create', 'gh-pages', '--track', 'origin/gh-pages')
+                owner = repo_dir / 'server-owner.txt'
+                if not owner.exists() or owner.read_text().strip() != REPO:
+                    raise RuntimeError('Existing gh-pages belongs to a different feed')
+            else:
+                git('switch', '--orphan', 'gh-pages')
+                (repo_dir / '.nojekyll').touch()
+                (repo_dir / 'server-owner.txt').write_text(REPO + '\n')
+                (repo_dir / 'index.html').write_text('<!doctype html><title>Personal blazer OTA</title><p>Custota feed: pixincreate/ or rootless/. Requires matching signing keys.</p>\n')
+            old = repo_dir / 'BUILD_MANIFEST.json'
+            if old.exists() and json.loads(old.read_text())['grapheneos'] > manifest['grapheneos']:
+                raise RuntimeError('Refusing to downgrade the published OTA feed')
+            for flavor, name in manifest['flavors'].items():
+                base = f'https://github.com/{REPO}/releases/download/{tag}/{name}'
+                folder = repo_dir / flavor
+                folder.mkdir(exist_ok=True)
+                (folder / 'blazer.json').write_text(json.dumps({'version': 2, 'full': {
+                    'location_ota': base, 'location_csig': base + '.csig'}, 'incremental': {}}, indent=2) + '\n')
+            old.write_text(json.dumps(manifest, indent=2) + '\n')
+            # Monthly repository activity avoids 60-day inactivity during long OS release gaps.
+            (repo_dir / 'last-check-month.txt').write_text(datetime.now(timezone.utc).strftime('%Y-%m') + '\n')
+            git('add', '.nojekyll', 'server-owner.txt', 'index.html', 'pixincreate/blazer.json',
+                'rootless/blazer.json', 'BUILD_MANIFEST.json', 'last-check-month.txt')
+            if git('status', '--porcelain'):
+                git('commit', '-m', f'Publish/check blazer OTA {manifest["grapheneos"]}')
+                git('push', '--set-upstream', 'origin', 'gh-pages')
+            output('deploy', 'true')
+
+
+        def main():
+            os.umask(0o077)
+            output('built', 'false')
+            output('deploy', 'false')
+            version = os.environ.get('OTA_VERSION', 'latest')
+            if version == 'latest':
+                with tempfile.NamedTemporaryFile() as f:
+                    public_download('https://releases.grapheneos.org/blazer-stable-security-preview', f.name)
+                    version = Path(f.name).read_text().split()[0]
+            if not re.fullmatch(r'[0-9]{10}', version):
+                raise RuntimeError('Invalid GrapheneOS version')
+            print('GrapheneOS:', version, flush=True)
+            publish = os.environ.get('PUBLISH') == 'true'
+            # Resolve on EVERY run, including when this OS already has a published OTA.
+            # Hash the actual verified APK: catches replaced assets under the same tag,
+            # while avoiding duplicate OTAs when a CI APK is later released unchanged.
+            selected_magisk = resolve_magisk()
+            apk_sha256 = selected_magisk[1]['apk_sha256']
+            if not re.fullmatch(r'[0-9a-f]{64}', apk_sha256):
+                raise RuntimeError('Invalid verified APK digest')
+            tag = f'blazer-{version}-pixin-{apk_sha256}'
+            release = release_by_tag(tag) if publish else None
+            manifest = existing_manifest(release, version) if release else None
+            if manifest and manifest.get('magisk', {}).get('apk_sha256') != apk_sha256:
+                if not release['draft']:
+                    raise RuntimeError('Published OTA does not match the selected pixincreate APK')
+                manifest = None
+            if release and not release['draft']:
+                if not manifest:
+                    raise RuntimeError('Published release is incomplete or inconsistent; refusing to overwrite immutable firmware')
+                print('This exact OS + pixincreate APK is complete; checking feed and Pages only.', flush=True)
+            else:
+                if manifest is None:
+                    manifest = build(version, selected_magisk)
+                    if not publish:
+                        print('Test build only; nothing published.', flush=True)
+                        return
+                    if release is None:
+                        notes = DIST / 'release-notes.txt'
+                        notes.write_text(f'GrapheneOS {version} for blazer.\n\npixincreate source: {manifest["magisk"]["url"]}\n\nBuilder: {PIN}\n\nUse only with your matching AVB and OTA signing keys.\n')
+                        gh('release', 'create', tag, '--repo', REPO, '--target', 'main', '--draft',
+                           '--title', f'Blazer GrapheneOS {version}', '--notes-file', str(notes))
+                        notes.unlink()
+                    # Replace partial draft uploads only. Never overwrite published firmware.
+                    gh('release', 'upload', tag, '--repo', REPO, '--clobber', *[str(p) for p in sorted(DIST.iterdir())])
+                    release = release_by_tag(tag)
+                    manifest = existing_manifest(release, version)
+                    if manifest is None:
+                        raise RuntimeError('Release upload verification failed; draft retained for retry')
+                gh('release', 'edit', tag, '--repo', REPO, '--draft=false')
+            sync_feed(manifest, tag)
+
+
+        if __name__ == '__main__':
+            main()
+        PYTHON
+    - name: Upload public build artifacts
+      if: always() && steps.build.outputs.built == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: blazer-ota-${{ github.run_id }}
+        path: builder/dist/
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+    - name: Remove temporary signing material
+      if: always()
+      shell: bash
+      run: |
+        sudo rm -rf -- builder/.tmp
+  deploy-pages:
+    needs: build
+    if: needs.build.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - name: Check out public update feed
+      uses: actions/checkout@v4
+      with:
+        ref: gh-pages
+        path: ota-site
+        persist-credentials: false
+        fetch-depth: 1
+    - name: Configure Pages
+      uses: actions/configure-pages@v5
+    - name: Upload Pages site
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ota-site
+    - name: Deploy Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+    - name: Verify deployed Custota feed
+      env:
+        PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+      run: |
+        set -euo pipefail
+        for flavor in pixincreate rootless; do
+          curl --fail --silent --show-error --location --retry 8 --retry-all-errors --retry-delay 5 \
+            "${PAGE_URL%/}/$flavor/blazer.json" -o "$RUNNER_TEMP/$flavor.json"
+          python3 - "$RUNNER_TEMP/$flavor.json" "ota-site/$flavor/blazer.json" <<'PY'
+        import json, sys
+        assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])), 'Deployed feed does not match the published release'
+        PY
+        done
