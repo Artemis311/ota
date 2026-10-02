@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "device": "blazer",
+  "grapheneos": "2026092501",
+  "builder_commit": "80ff7950d1eb397c3c44c462a19570c1b7aaa8df",
+  "magisk": {
+    "kind": "developer-build",
+    "commit": "d05d48e5c9e07c835f2ca805f5bef884ab32c181",
+    "run_id": 34963542982,
+    "artifact_id": 10394402215,
+    "url": "https://github.com/pixincreate/Magisk/actions/runs/34963542982",
+    "date": "2026-09-15T11:43:48Z",
+    "apk_sha256": "f51818133f7c2c033a8fb2b2d4858e3e9ff34ebfe70bd6b02af7f73a86d9dbdc"
+  },
+  "flavors": {
+    "rootless": "blazer-2026092501-rootless.zip",
+    "pixincreate": "blazer-2026092501-pixincreate-ci-d05d48e5.zip"
+  },
+  "files": {
+    "blazer-2026092501-rootless.zip": {
+      "size": 1703749597,
+      "sha256": "d9688c21b7ace285c7f2673679448a1a8c5d338788d097acd23bb1279eed4f41"
+    },
+    "blazer-2026092501-rootless.zip.csig": {
+      "size": 3063,
+      "sha256": "ac5fe6a2ab5ffbe54aa0854b11378931866123c52466e1527b601c699cde1a39"
+    },
+    "blazer-2026092501-pixincreate-ci-d05d48e5.zip": {
+      "size": 1703993931,
+      "sha256": "2acd0343256b2addb204d14a73f1ceb17b4620a8230e46a5cb1c346d3fab0b55"
+    },
+    "blazer-2026092501-pixincreate-ci-d05d48e5.zip.csig": {
+      "size": 3063,
+      "sha256": "c51d561a0ccf0d138b8aed4f489483cf169619d76de9742ea073ddddb2698f87"
+    }
+  }
+}
