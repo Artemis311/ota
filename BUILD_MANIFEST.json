@@ -4,17 +4,17 @@
   "grapheneos": "2026100201",
   "builder_commit": "80ff7950d1eb397c3c44c462a19570c1b7aaa8df",
   "magisk": {
-    "kind": "developer-build",
-    "commit": "d05d48e5c9e07c835f2ca805f5bef884ab32c181",
-    "run_id": 34963542982,
-    "artifact_id": 10394402215,
-    "url": "https://github.com/pixincreate/Magisk/actions/runs/34963542982",
-    "date": "2026-09-15T11:43:48Z",
-    "apk_sha256": "f51818133f7c2c033a8fb2b2d4858e3e9ff34ebfe70bd6b02af7f73a86d9dbdc"
+    "kind": "release",
+    "tag": "v31.0-3",
+    "prerelease": false,
+    "asset_id": 565562788,
+    "url": "https://github.com/pixincreate/Magisk/releases/tag/v31.0-3",
+    "date": "2026-09-15T11:27:19Z",
+    "apk_sha256": "ddcd10e42b11e233507f4720c5377f17e6471d27c46c20dba4cbc7afc9355cbc"
   },
   "flavors": {
     "rootless": "blazer-2026100201-rootless.zip",
-    "pixincreate": "blazer-2026100201-pixincreate-ci-d05d48e5.zip"
+    "pixincreate": "blazer-2026100201-pixincreate-v31.0-3.zip"
   },
   "files": {
     "blazer-2026100201-rootless.zip": {
@@ -25,13 +25,13 @@
       "size": 3063,
       "sha256": "cc43a66a0c3a7cd07702f4b605f1249841b2ec8cac69158cee56373a69f366a1"
     },
-    "blazer-2026100201-pixincreate-ci-d05d48e5.zip": {
-      "size": 1714664922,
-      "sha256": "9450eee963e63b96742a4414d46f3cee2ed0ebafab3f55dab85b7e4f302e7962"
+    "blazer-2026100201-pixincreate-v31.0-3.zip": {
+      "size": 1714665018,
+      "sha256": "0d3a1d6fdebb891065ea628103b2f5f40f5ad6309494e484a5c489e0dfe2015a"
     },
-    "blazer-2026100201-pixincreate-ci-d05d48e5.zip.csig": {
+    "blazer-2026100201-pixincreate-v31.0-3.zip.csig": {
       "size": 3063,
-      "sha256": "20d6787ab36105a784083a2958a110bc17dc264af7e2c062202a9a973c51eeba"
+      "sha256": "f242acbf08159dcd2f307017618f90aa4fc51ec6c4af20fe38930b59b16d0fc0"
     }
   }
 }
