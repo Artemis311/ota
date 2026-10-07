@@ -1,8 +1,8 @@
 {
   "version": 2,
   "full": {
-    "location_ota": "https://github.com/Artemis311/ota/releases/download/blazer-2026100201-pixin-ddcd10e42b11/blazer-2026100201-rootless.zip",
-    "location_csig": "https://github.com/Artemis311/ota/releases/download/blazer-2026100201-pixin-ddcd10e42b11/blazer-2026100201-rootless.zip.csig"
+    "location_ota": "https://github.com/Artemis311/ota/releases/download/blazer-2026100201-pixin-f51818133f7c/blazer-2026100201-rootless.zip",
+    "location_csig": "https://github.com/Artemis311/ota/releases/download/blazer-2026100201-pixin-f51818133f7c/blazer-2026100201-rootless.zip.csig"
   },
   "incremental": {}
 }
