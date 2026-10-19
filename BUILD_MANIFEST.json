@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "device": "blazer",
-  "grapheneos": "2026100601",
+  "grapheneos": "2026101601",
   "builder_commit": "80ff7950d1eb397c3c44c462a19570c1b7aaa8df",
   "magisk": {
     "kind": "developer-build",
@@ -13,25 +13,25 @@
     "apk_sha256": "6ec09d09e7da18a356942ef73aca64a7c17fac5a399e2f7a4650031711c082ac"
   },
   "flavors": {
-    "rootless": "blazer-2026100601-rootless.zip",
-    "pixincreate": "blazer-2026100601-pixincreate-ci-d0d98b05.zip"
+    "rootless": "blazer-2026101601-rootless.zip",
+    "pixincreate": "blazer-2026101601-pixincreate-ci-d0d98b05.zip"
   },
   "files": {
-    "blazer-2026100601-rootless.zip": {
-      "size": 1748393373,
-      "sha256": "14ffeb99038a29d3ceeb3d310afbe9447507b6682a30f418ebc7a3917aec4d50"
+    "blazer-2026101601-rootless.zip": {
+      "size": 1817211664,
+      "sha256": "b486a93ec7a049e4eae74bcc27316beae3bfb442cc99050d28d72cea60ad6112"
     },
-    "blazer-2026100601-rootless.zip.csig": {
+    "blazer-2026101601-rootless.zip.csig": {
       "size": 3063,
-      "sha256": "3eba6019360cef3ae53e960f30e530df01c74538e54c451ff08e9c97ebd76b24"
+      "sha256": "f45c094b6f0288192f4c1ba60884073a8b78e509670f4aaf622f26025a42340c"
     },
-    "blazer-2026100601-pixincreate-ci-d0d98b05.zip": {
-      "size": 1748626126,
-      "sha256": "9545816570c3d5a91f0f0196ac02054afbafe905a8954a06d1c5aa685aedbb32"
+    "blazer-2026101601-pixincreate-ci-d0d98b05.zip": {
+      "size": 1817444421,
+      "sha256": "90f5920d64491df9eeeb477ff0883aa8e49228bdfc0ef03ce996d6712b2c7b85"
     },
-    "blazer-2026100601-pixincreate-ci-d0d98b05.zip.csig": {
+    "blazer-2026101601-pixincreate-ci-d0d98b05.zip.csig": {
       "size": 3063,
-      "sha256": "61a8a0618a94e99168adfdcf76f557366ce9e8291c529f60516c20027a7bf9ad"
+      "sha256": "5c02ce276d5c13b922c52d3dbc5e7ded8f9712d20ac73794c223293f216119a6"
     }
   }
 }
