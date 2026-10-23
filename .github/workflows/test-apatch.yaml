@@ -1,9 +1,0 @@
-name: Build APatch Test OTA
-
-on:
-  workflow_dispatch:
-    inputs:
-      superkey:
-        description: 'SuperKey für APatch (z.B. 8-16 Zeichen, Buchstaben+Zahlen)'
-        required: true
-        default: 'MeinTestKey123'
