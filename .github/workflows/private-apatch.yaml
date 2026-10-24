@@ -97,10 +97,10 @@ jobs:
                   '  python3 -I updater-overlay/check_target.py "$dir/stock/system/fs_tree/system/priv-app/Updater/Updater.apk"\n'
                   '  cmp "$dir/patched/product/fs_tree/overlay/UpdaterOverlay.apk" .tmp/updater-overlay.apk\n',
                   '  expected=("Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ")\n')
-              # Upstream currently warns and continues here; a private test fails closed.
+              # Allow the supported relative-base path only after its symbol validation succeeds.
               text = replace_once(text,
                   "      printRed 'Warning: KernelPatch could not resolve the arm64 relocation table and used its relative-base kallsyms path.'\n",
-                  "      printRed 'KernelPatch relocation lookup failed; refusing this test OTA.'\n      exit 1\n")
+                  "      printRed 'KernelPatch used relative-base symbol lookup; checking its validation results.'\n      for required in \\\n        'try kallsyms_offsets first for 64-bit relative-base kernel' \\\n        'kallsyms_offsets offset: 0x' \\\n        'pid_vnr verfied sp_el0' \\\n        'memblock_phys_alloc_try_nid: type: t, offset: 0x' \\\n        'patch done: kernel'; do\n        if ! grep -Fq \"$required\" kptools-patch.log; then\n          printRed \"Relative-base validation is incomplete: $required\"\n          exit 1\n        fi\n      done\n      if grep -Eq 'pid_vnr verification failed|resolved symbol table only covers|can.t find kallsyms_num_syms|mismatch relo applied' kptools-patch.log; then\n        printRed 'KernelPatch symbol validation reported an inconsistency.'\n        exit 1\n      fi\n")
               (builder / "rooted-ota.private.sh").write_text(text, encoding="utf-8", newline="\n")
               (builder / "run-private.sh").write_text(BUILD_SH, encoding="utf-8", newline="\n")
               run("bash", "-n", str(builder / "rooted-ota.private.sh"))
