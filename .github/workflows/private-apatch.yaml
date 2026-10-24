@@ -1,0 +1,289 @@
+name: Blazer - private APatch test (draft download only)
+
+'on':
+  workflow_dispatch:
+    inputs:
+      ota_version:
+        description: 'GrapheneOS version: latest or an exact 10-digit version (never downgrade)'
+        type: string
+        required: true
+        default: latest
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/private-apatch.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blazer-private-apatch
+  cancel-in-progress: false
+
+jobs:
+  private-build:
+    if: github.repository == 'Artemis311/ota' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    env:
+      OTA_VERSION: ${{ inputs.ota_version || 'latest' }}
+      GH_PROMPT_DISABLED: '1'
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@v4
+        with:
+          path: ota
+          persist-credentials: false
+      - name: Check out inspected APatch builder
+        uses: actions/checkout@v4
+        with:
+          repository: david568303/apatch-graphene
+          ref: c1d7484af159e573afddaf351b485f2e0995e530
+          path: builder
+          persist-credentials: false
+      - name: Install build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils
+          docker version
+      - name: Prepare private build and validate shell syntax
+        shell: bash
+        run: |
+          mkdir -p ota/.github/scripts
+          cat > ota/.github/scripts/private_apatch.py <<'PY_PRIVATE_HELPER'
+          """Prepare a pinned APatch builder and store its output in a draft release only."""
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+          
+          BUILDER_COMMIT = "c1d7484af159e573afddaf351b485f2e0995e530"
+          SCRIPT_BLOB = "997cbd963103403d7e3d30b2e19a26bdab8d39f1"
+          KERNELPATCH_COMMIT = "280d32d967feb7ddc0fd1848aa1d1388807945d5"
+          
+          
+          def run(*args, **kwargs):
+              return subprocess.run(args, check=True, **kwargs)
+          
+          
+          def replace_once(text, old, new):
+              if text.count(old) != 1:
+                  raise RuntimeError("Pinned builder differs from the inspected source")
+              return text.replace(old, new, 1)
+          
+          
+          def prepare():
+              root = Path(os.environ["GITHUB_WORKSPACE"])
+              builder = root / "builder"
+              actual = run("git", "-C", str(builder), "rev-parse", "HEAD", capture_output=True, text=True).stdout.strip()
+              if actual != BUILDER_COMMIT:
+                  raise RuntimeError("Unexpected builder checkout")
+              source = builder / "rooted-ota.sh"
+              blob = run("git", "-C", str(builder), "hash-object", str(source), capture_output=True, text=True).stdout.strip()
+              if blob != SCRIPT_BLOB:
+                  raise RuntimeError("Unexpected builder script")
+              text = source.read_text(encoding="utf-8")
+              # A private test OTA must not redirect the system updater to public releases.
+              text = replace_once(text, "    buildUpdaterOverlay\n    registerPatchModule 'updater_overlay.py' 'UpdaterOverlayModule'\n", "")
+              text = replace_once(text, '        args+=("--module-updater-overlay" ".tmp/updater-overlay.apk")\n', "")
+              text = replace_once(text,
+                  '  expected=("Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ"\n'
+                  '    "Only in $dir/patched/product/fs_tree/overlay: UpdaterOverlay.apk")\n'
+                  '  python3 -I updater-overlay/check_target.py "$dir/stock/system/fs_tree/system/priv-app/Updater/Updater.apk"\n'
+                  '  cmp "$dir/patched/product/fs_tree/overlay/UpdaterOverlay.apk" .tmp/updater-overlay.apk\n',
+                  '  expected=("Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ")\n')
+              # Upstream currently warns and continues here; a private test fails closed.
+              text = replace_once(text,
+                  "      printRed 'Warning: KernelPatch could not resolve the arm64 relocation table and used its relative-base kallsyms path.'\n",
+                  "      printRed 'KernelPatch relocation lookup failed; refusing this test OTA.'\n      exit 1\n")
+              (builder / "rooted-ota.private.sh").write_text(text, encoding="utf-8", newline="\n")
+              (builder / "run-private.sh").write_text(BUILD_SH, encoding="utf-8", newline="\n")
+              run("bash", "-n", str(builder / "rooted-ota.private.sh"))
+              run("bash", "-n", str(builder / "run-private.sh"))
+          
+          
+          BUILD_SH = r'''#!/usr/bin/env bash
+          set -euo pipefail
+          umask 077
+          for name in KEY_AVB_BASE64 KEY_OTA_BASE64 CERT_OTA_BASE64 PASSPHRASE_AVB PASSPHRASE_OTA; do
+            if [[ -z "${!name:-}" ]]; then
+              printf 'Missing repository secret: %s\n' "$name" >&2
+              exit 1
+            fi
+          done
+          [[ "$OTA_VERSION" == latest || "$OTA_VERSION" =~ ^[0-9]{10}$ ]] || exit 1
+          unset GITHUB_TOKEN GH_TOKEN MAGISK_DOWNLOAD_TOKEN
+          export DEVICE_ID=blazer
+          export SKIP_ROOTLESS=false SKIP_APATCH=false SKIP_MODULES=true SKIP_CLEANUP=true
+          export APATCH_PREINSTALL_MANAGER=false ALLOW_UNVERIFIED_APATCH=false DEBUG=''
+          export GITHUB_REPO='' FORCE_BUILD=true
+          export APATCH_VERSION=11282 KERNELPATCH_VERSION=0.13.9
+          export KERNELPATCH_COMMIT=280d32d967feb7ddc0fd1848aa1d1388807945d5
+          source rooted-ota.private.sh
+          createRootedOta
+          mkdir -p dist
+          # Verify that CI is still signing for the AVB key already published by this fork.
+          openssl pkey -in "$KEY_AVB" -passin env:PASSPHRASE_AVB -pubout -out .tmp/avb-public.pem
+          .tmp/avbroot key extract-avb -k .tmp/avb-public.pem -o dist/avb_pkmd.bin
+          cmp dist/avb_pkmd.bin ../ota/avb_pkmd.bin
+          # The OTA certificate must match the supplied OTA private key.
+          openssl pkey -in "$KEY_OTA" -passin env:PASSPHRASE_OTA -pubout -out .tmp/ota-public.pem
+          openssl x509 -in "$CERT_OTA" -pubkey -noout > .tmp/cert-public.pem
+          cmp .tmp/ota-public.pem .tmp/cert-public.pem
+          for flavor in apatch rootless; do
+            asset="${POTENTIAL_ASSETS[$flavor]}"
+            target="blazer-${OTA_VERSION}-${flavor}-private-test.zip"
+            .tmp/avbroot ota verify --input ".tmp/$asset" --cert-ota "$CERT_OTA" --public-key-avb dist/avb_pkmd.bin
+            cp -- ".tmp/$asset" "dist/$target"
+          done
+          downloadVerifiedFile .tmp/apatch-manager.apk "$APATCH_MANAGER_URL" "$APATCH_MANAGER_SHA256"
+          cp .tmp/apatch-manager.apk "dist/APatch-${APATCH_VERSION}-release-signed.apk"
+          cp -- "$CERT_OTA" dist/ota.crt
+          export BUILD_OTA_VERSION="$OTA_VERSION" BUILD_APATCH_VERSION="$APATCH_VERSION"
+          export BUILD_MANAGER_URL="$APATCH_MANAGER_URL" BUILD_MANAGER_SHA256="$APATCH_MANAGER_SHA256"
+          python3 ../ota/.github/scripts/private_apatch.py manifest
+          '''
+          
+          
+          INSTALL_NOTES = """Private APatch test OTA for Pixel 10 Pro (blazer)
+          
+          This build has NOT been tested on a physical blazer. Successful cryptographic
+          verification does not establish bootability or security of KernelPatch.
+          
+          Use only on blazer, with the matching AVB and OTA keys, and without downgrading.
+          Back up your data before changing root implementations. Keep OEM unlocking ON.
+          Bootloader unlocking/locking wipes data. This package does not lock it for you.
+          Never use APatch's direct install/update/restore actions on a locked bootloader:
+          root updates must be rebuilt and re-signed as an OTA.
+          
+          The APatch ZIP is patched from the original GrapheneOS OTA, not a Magisk image.
+          Remove/disable the old Magisk modules before switching root implementations.
+          Do not run multiple root implementations or multiple Zygisk loaders together.
+          The official APatch manager APK is included for installation after the OS boots.
+          No Zygisk/LSPosed modules are preinstalled. These require separate compatibility
+          testing; do not add modules until the virtual A/B snapshot merge has finished.
+          
+          For an existing avbroot installation using these same keys, use the standard
+          recovery adb sideload procedure. Do not try to sideload a lower OS version.
+          For a first installation or different keys, follow avbroot's complete initial
+          setup instructions. Do not lock the bootloader until bootability and AVB have
+          been checked on the phone. Never switch slots after a failed flash.
+          
+          The rootless ZIP is separately signed with the same keys for recovery/unrooting.
+          It cannot guarantee recovery while a virtual A/B snapshot merge is in progress.
+          The ZIPs include OTA certificates for subsequent custom-signed sideloads.
+          There is no Custota module or public update-feed overlay in this private build.
+          Disable the system updater to avoid repeated failed stock OTA downloads; plan
+          to install future security updates as newly signed OTAs yourself.
+          
+          Check downloaded files against SHA256SUMS before use.
+          Official avbroot instructions: https://github.com/chenxiaolong/avbroot
+          Keep this release a DRAFT. Publishing it would make the firmware public.
+          """
+          
+          
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+          
+          
+          def manifest():
+              dist = Path("dist")
+              version = os.environ["BUILD_OTA_VERSION"]
+              if not re.fullmatch(r"[0-9]{10}", version):
+                  raise RuntimeError("Invalid resolved OS version")
+              (dist / "READ-ME-FIRST.txt").write_text(INSTALL_NOTES)
+              data = {
+                  "device": "blazer", "grapheneos": version,
+                  "hardware_tested": False, "builder_commit": BUILDER_COMMIT,
+                  "kernelpatch_commit": KERNELPATCH_COMMIT,
+                  "apatch": os.environ["BUILD_APATCH_VERSION"],
+                  "manager_url": os.environ["BUILD_MANAGER_URL"],
+                  "manager_sha256": os.environ["BUILD_MANAGER_SHA256"],
+                  "repository_commit": os.environ["GITHUB_SHA"],
+                  "files": {p.name: {"size": p.stat().st_size, "sha256": digest(p)}
+                            for p in sorted(dist.iterdir()) if p.is_file()},
+              }
+              (dist / "BUILD_MANIFEST.json").write_text(json.dumps(data, indent=2) + "\n")
+              (dist / "SHA256SUMS").write_text("".join(
+                  f"{digest(p)}  {p.name}\n" for p in sorted(dist.iterdir())
+                  if p.is_file() and p.name != "SHA256SUMS"))
+          
+          
+          def publish():
+              root = Path(os.environ["GITHUB_WORKSPACE"])
+              dist = root / "builder" / "dist"
+              data = json.loads((dist / "BUILD_MANIFEST.json").read_text())
+              repo = os.environ["GITHUB_REPOSITORY"]
+              if repo != "Artemis311/ota":
+                  raise RuntimeError("This private build is restricted to Artemis311/ota")
+              for name, expected in data["files"].items():
+                  if Path(name).name != name or digest(dist / name) != expected["sha256"]:
+                      raise RuntimeError("Build output checksum mismatch")
+              allowed = set(data["files"]) | {"BUILD_MANIFEST.json", "SHA256SUMS"}
+              if {p.name for p in dist.iterdir()} != allowed:
+                  raise RuntimeError("Unexpected file in the download directory")
+              tag = f'private-apatch-blazer-{data["grapheneos"]}-{os.environ["GITHUB_RUN_ID"]}-{os.environ["GITHUB_RUN_ATTEMPT"]}'
+              notes = root / "private-release-notes.txt"
+              notes.write_text(
+                  f'Private APatch test for blazer, GrapheneOS {data["grapheneos"]}.\n\n'
+                  'NOT hardware-tested on blazer. Read READ-ME-FIRST.txt before flashing.\n'
+                  'Signed using the existing repository AVB/OTA keys; all OTA signatures verified.\n'
+                  'Includes APatch OTA, rootless OTA, official manager APK and checksums.\n\n'
+                  '**Keep as draft: publishing would expose these downloads publicly.**\n')
+              run("gh", "release", "create", tag, "--repo", repo, "--target", os.environ["GITHUB_SHA"],
+                  "--draft", "--title", f'PRIVATE TEST | blazer {data["grapheneos"]} | APatch {data["apatch"]}',
+                  "--notes-file", str(notes))
+              release = json.loads(run("gh", "api", f"repos/{repo}/releases/tags/{tag}",
+                  capture_output=True, text=True).stdout)
+              if release["draft"] is not True:
+                  raise RuntimeError("Release is not private; refusing to upload")
+              run("gh", "release", "upload", tag, "--repo", repo,
+                  *[str(dist / name) for name in sorted(allowed)])
+              checked = json.loads(run("gh", "api", f'repos/{repo}/releases/{release["id"]}',
+                  capture_output=True, text=True).stdout)
+              assets = {a["name"]: a for a in checked["assets"]}
+              if checked["draft"] is not True or set(assets) != allowed:
+                  raise RuntimeError("Draft upload verification failed")
+              for name, asset in assets.items():
+                  path = dist / name
+                  if asset["state"] != "uploaded" or asset["size"] != path.stat().st_size:
+                      raise RuntimeError("Incomplete draft upload")
+                  if asset.get("digest") != "sha256:" + digest(path):
+                      raise RuntimeError("Uploaded asset digest mismatch")
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+                  summary.write(f'Private download: {checked["html_url"]}\n\nKeep this release a draft. Hardware test on blazer is still required.\n')
+              print("Private draft download:", checked["html_url"])
+          
+          
+          if __name__ == "__main__":
+              {"prepare": prepare, "manifest": manifest, "publish": publish}[sys.argv[1]]()
+          PY_PRIVATE_HELPER
+          python3 ota/.github/scripts/private_apatch.py prepare
+      - name: Build and verify APatch and rootless OTAs
+        working-directory: builder
+        shell: bash
+        env:
+          PASSPHRASE_AVB: ${{ secrets.PASSPHRASE_AVB }}
+          PASSPHRASE_OTA: ${{ secrets.PASSPHRASE_OTA }}
+          KEY_AVB_BASE64: ${{ secrets.KEY_AVB_BASE64 }}
+          KEY_OTA_BASE64: ${{ secrets.KEY_OTA_BASE64 }}
+          CERT_OTA_BASE64: ${{ secrets.CERT_OTA_BASE64 }}
+        run: bash run-private.sh
+      - name: Upload only to a private release draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ota/.github/scripts/private_apatch.py publish
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          sudo rm -rf -- "$GITHUB_WORKSPACE/builder/.tmp"
+
+# Deliberately no upload-artifact, Pages deployment, public release publication,
+# scheduled build, or public OTA feed update. Public Actions artifacts are not private.
