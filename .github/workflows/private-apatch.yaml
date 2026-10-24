@@ -88,6 +88,8 @@ jobs:
               if blob != SCRIPT_BLOB:
                   raise RuntimeError("Unexpected builder script")
               text = source.read_text(encoding="utf-8")
+              # Keep the patched output separate from the original downloaded OTA.
+              text = replace_once(text, "    POTENTIAL_ASSETS['apatch']=\"${DEVICE_ID}-ota_update-${OTA_VERSION}.zip\"", "    POTENTIAL_ASSETS['apatch']=\"${DEVICE_ID}-${OTA_VERSION}-apatch-private-patched.zip\"")
               # A private test OTA must not redirect the system updater to public releases.
               text = replace_once(text, "    buildUpdaterOverlay\n    registerPatchModule 'updater_overlay.py' 'UpdaterOverlayModule'\n", "")
               text = replace_once(text, '        args+=("--module-updater-overlay" ".tmp/updater-overlay.apk")\n', "")
@@ -129,7 +131,7 @@ jobs:
           mkdir -p dist
           # Verify that CI is still signing for the AVB key already published by this fork.
           openssl pkey -in "$KEY_AVB" -passin env:PASSPHRASE_AVB -pubout -out .tmp/avb-public.pem
-          .tmp/avbroot key extract-avb -k .tmp/avb-public.pem -o dist/avb_pkmd.bin
+          .tmp/avbroot key encode-avb --public-key .tmp/avb-public.pem -o dist/avb_pkmd.bin
           cmp dist/avb_pkmd.bin ../ota/avb_pkmd.bin
           # The OTA certificate must match the supplied OTA private key.
           openssl pkey -in "$KEY_OTA" -passin env:PASSPHRASE_OTA -pubout -out .tmp/ota-public.pem
