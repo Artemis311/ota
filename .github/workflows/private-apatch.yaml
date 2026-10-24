@@ -59,6 +59,7 @@ jobs:
           import os
           import re
           import subprocess
+          import urllib.parse
           import sys
           from pathlib import Path
           
@@ -238,15 +239,19 @@ jobs:
                   'Signed using the existing repository AVB/OTA keys; all OTA signatures verified.\n'
                   'Includes APatch OTA, rootless OTA, official manager APK and checksums.\n\n'
                   '**Keep as draft: publishing would expose these downloads publicly.**\n')
-              run("gh", "release", "create", tag, "--repo", repo, "--target", os.environ["GITHUB_SHA"],
-                  "--draft", "--title", f'PRIVATE TEST | blazer {data["grapheneos"]} | APatch {data["apatch"]}',
-                  "--notes-file", str(notes))
-              release = json.loads(run("gh", "api", f"repos/{repo}/releases/tags/{tag}",
-                  capture_output=True, text=True).stdout)
+              request = {"tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
+                         "draft": True, "name": f'PRIVATE TEST | blazer {data["grapheneos"]} | APatch {data["apatch"]}',
+                         "body": notes.read_text()}
+              release = json.loads(run("gh", "api", "--method", "POST", f"repos/{repo}/releases", "--input", "-",
+                  input=json.dumps(request), capture_output=True, text=True).stdout)
               if release["draft"] is not True:
                   raise RuntimeError("Release is not private; refusing to upload")
-              run("gh", "release", "upload", tag, "--repo", repo,
-                  *[str(dist / name) for name in sorted(allowed)])
+              upload_url = release["upload_url"].split("{", 1)[0]
+              if not upload_url.startswith(f"https://uploads.github.com/repos/{repo}/releases/"):
+                  raise RuntimeError("Unexpected release upload destination")
+              for name in sorted(allowed):
+                  run("gh", "api", "--method", "POST", upload_url + "?name=" + urllib.parse.quote(name, safe=""),
+                      "--header", "Content-Type: application/octet-stream", "--input", str(dist / name), "--silent")
               checked = json.loads(run("gh", "api", f'repos/{repo}/releases/{release["id"]}',
                   capture_output=True, text=True).stdout)
               assets = {a["name"]: a for a in checked["assets"]}
