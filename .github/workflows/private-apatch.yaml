@@ -12,6 +12,7 @@ name: Blazer - private APatch and SUSFS LKM test (draft download only)
     branches: [main]
     paths:
       - .github/workflows/private-apatch.yaml
+      - .github/scripts/build_susfs_test.py
 
 permissions:
   contents: read
