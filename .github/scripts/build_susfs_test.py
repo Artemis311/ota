@@ -314,7 +314,10 @@ def main():
         "client_build": "clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie -fno-stack-protector -fuse-ld=lld -Wl,-e,_start",
     }
     files["provenance.json"] = (json.dumps(provenance, indent=2) + "\n").encode()
-    files["SHA256SUMS"] = "".join(f"{sha(data)}  {name}\n" for name, data in sorted(files.items())).encode()
+    # APatch deletes customize.sh after installation and module.prop is a mutable status card.
+    files["SHA256SUMS"] = "".join(
+        f"{sha(data)}  {name}\n" for name, data in sorted(files.items())
+        if name not in {"customize.sh", "module.prop"}).encode()
     for name, data in files.items():
         if name.endswith(".sh"):
             run("sh", "-n", input=data)
@@ -333,6 +336,14 @@ def main():
         for name, data in files.items():
             if archive.read(name) != data:
                 raise RuntimeError(f"Module ZIP differs: {name}")
+    # Exercise checksums after the exact installer mutations, before shipping the ZIP.
+    installed = work / "installed-fixture"
+    installed.mkdir()
+    with zipfile.ZipFile(target) as archive:
+        archive.extractall(installed)
+    (installed / "customize.sh").unlink()
+    (installed / "module.prop").write_text("description=runtime status changed\\n")
+    run("sha256sum", "-c", "SHA256SUMS", cwd=installed)
     run("git", "-C", str(source), "archive", "--format=tar.gz", "--prefix=susfs4ksu-lkm/",
         f"--output={str((dist / 'SUSFS-upstream-source-v2.3.0-r18.4.tar.gz').resolve())}", "HEAD")
     (dist / "SUSFS-TEST-INSTRUCTIONS.txt").write_text(NOTES)
