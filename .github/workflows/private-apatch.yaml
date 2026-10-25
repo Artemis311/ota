@@ -1,4 +1,4 @@
-name: Blazer - private APatch with SELinux filter (draft download only)
+name: Blazer - private APatch and SUSFS LKM test (draft download only)
 
 'on':
   workflow_dispatch:
@@ -46,7 +46,7 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils
+          sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils clang lld
           docker version
       - name: Prepare private build and validate shell syntax
         shell: bash
@@ -182,6 +182,12 @@ jobs:
           KPM file and hash are included for traceability; do not load it twice.
           APatch should show only selinux_magisk_access_filter in its KPM list.
           Listing alone does not prove hiding works. Test against the apps you use.
+          SUSFS is supplied separately as SUSFS-APatch-test-v2.3.0-r18.4-blazer.zip.
+          Install that ZIP once via APatch AndroidPatch Modules (not KPM) after any
+          snapshot merge has finished. Installing the OTA alone does not enable SUSFS.
+          It attempts loading once after boot completed; failed/interrupted attempts
+          stay disarmed. Use the module Action button to export diagnostics.
+          Read SUSFS-TEST-INSTRUCTIONS.txt for limitations and removal instructions.
           The previous four-KPM OTA is obsolete for this configuration.
           Do not hot-unload these experimental modules; remove via a freshly signed OTA.
           This build does not fix the previously observed apd crash.
@@ -222,6 +228,7 @@ jobs:
                   "device": "blazer", "grapheneos": version,
                   "hardware_tested": False, "builder_commit": BUILDER_COMMIT,
                   "kpm_profile": "selinux-filter-only",
+                  "susfs_companion": json.loads((dist / "SUSFS-PROVENANCE.json").read_text()),
                   "kpm_sources": {
                       "selinux_hook": "Admirepowered/selinux_hook@8ad91d00b9abd0fb3191d968b74fdc502126f8ca"
                   },
@@ -258,10 +265,10 @@ jobs:
                   f'Private APatch test for blazer, GrapheneOS {data["grapheneos"]}.\n\n'
                   'NOT hardware-tested on blazer. Read READ-ME-FIRST.txt before flashing.\n'
                   'Signed using the existing repository AVB/OTA keys; all OTA signatures verified.\n'
-                  'Includes APatch OTA with only SELinux Access Filter; clean rootless OTA, manager APK, KPM input and checksums.\n\n'
+                  'Includes signed APatch/rootless OTAs, SELinux filter, manager APK and separate SUSFS APM test ZIP. Install SUSFS via APatch AP modules; OTA alone does not load it. Read SUSFS-TEST-INSTRUCTIONS.txt.\n\n'
                   '**Keep as draft: publishing would expose these downloads publicly.**\n')
               request = {"tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
-                         "draft": True, "name": f'PRIVATE APatch | SELinux filter only | blazer {data["grapheneos"]} | {data["apatch"]}',
+                         "draft": True, "name": f'PRIVATE APatch | SUSFS LKM test + SELinux | blazer {data["grapheneos"]} | {data["apatch"]}',
                          "body": notes.read_text()}
               release = json.loads(run("gh", "api", "--method", "POST", f"repos/{repo}/releases", "--input", "-",
                   input=json.dumps(request), capture_output=True, text=True).stdout)
@@ -293,6 +300,9 @@ jobs:
               {"prepare": prepare, "manifest": manifest, "publish": publish}[sys.argv[1]]()
           PY_PRIVATE_HELPER
           python3 ota/.github/scripts/private_apatch.py prepare
+      - name: Build and validate pinned SUSFS APatch test companion
+        working-directory: builder
+        run: python3 ../ota/.github/scripts/build_susfs_test.py dist
       - name: Build and verify APatch and rootless OTAs
         working-directory: builder
         shell: bash
