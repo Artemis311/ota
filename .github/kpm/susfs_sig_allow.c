@@ -89,9 +89,12 @@ static long allow_status(const char *args, char *__user out, int size)
 static long allow_exit(void *reserved)
 {
     (void)reserved;
-    /* Embedded test module: removal is by a freshly signed OTA, not hot unload.
-     * Keeping callback text alive avoids racing another signature check. */
-    return -16;
+    /* KernelPatch frees module text even when exit returns an error. Remove
+     * our callback first; returning EBUSY alone would leave a dangling hook.
+     * Hot unload during concurrent module loads remains unsupported. */
+    if (sig_check)
+        hook_unwrap(sig_check, 0, after_sig_check);
+    return 0;
 }
 KPM_INIT(allow_init);
 KPM_CTL0(allow_status);
