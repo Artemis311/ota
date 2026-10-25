@@ -3,6 +3,7 @@
 """Build a pinned SUSFS LKM companion for private APatch hardware testing."""
 import hashlib
 import json
+import re
 from pathlib import Path
 import struct
 import subprocess
@@ -283,8 +284,12 @@ def main():
         validate_elf(data, 1 if name.endswith(".ko") else 3, name)
         files[("lib/" if name.endswith(".ko") else "bin/") + name] = data
     ko = files["lib/susfs_guard_lkm-android15-6.6.ko"]
-    if b"vermagic=6.6." not in ko or b"android15" not in ko:
-        raise RuntimeError("Wrong kernel generation in SUSFS module")
+    vermagic = re.search(rb"(?:^|\\x00)vermagic=([^\\x00]+)", ko)
+    if not vermagic or not vermagic.group(1).startswith(b"6.6."):
+        raise RuntimeError("Wrong kernel generation in SUSFS module: " + repr(vermagic))
+    # DDK builds need not carry an Android generation tag in vermagic.
+    # The exact pinned asset hash above identifies the android15-6.6 build.
+    print("SUSFS pinned android15-6.6 asset vermagic:", vermagic.group(1).decode())
     client = work / "susfs_sc"
     run("clang", "--target=aarch64-linux-gnu", "-O2", "-nostdlib", "-static-pie",
         "-fno-stack-protector", "-fuse-ld=lld", "-Wl,-e,_start",
