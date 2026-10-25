@@ -358,6 +358,8 @@ def main():
         '"\\tadd\\tx1, x1, :lo12:_DYNAMIC\\n"\n'
         '"\\tbl\\tsusfs_relocate\\n"\n'
         '"\\tldr\\tx0, [sp]\\n"')
+    # The upstream C source uses literal tabs inside its assembly strings.
+    old_entry = old_entry.replace("\\t", "\t")
     if loader_source.count(old_entry) != 1:
         raise RuntimeError("Upstream loader entry differs from reviewed source")
     loader_source = loader_source.replace(old_entry, new_entry, 1)
