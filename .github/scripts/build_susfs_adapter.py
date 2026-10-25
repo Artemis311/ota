@@ -120,7 +120,7 @@ def main():
     run(prefix + "gcc", "-nostdlib", "-r", "-o", str(dest / "susfs_sig_allow.kpm"), *objects)
     undefined = run(prefix + "nm", "-u", str(dest / "susfs_sig_allow.kpm"),
                     capture_output=True, text=True).stdout
-    expected = {"compat_copy_to_user", "current_uid", "hook_wrap", "kallsyms_lookup_name", "kver", "printk"}
+    expected = {"compat_copy_to_user", "current_uid", "hook_wrap", "kallsyms_lookup_name", "kver", "printk", "hook_unwrap_remove"}
     found = {line.split()[-1] for line in undefined.splitlines() if line.split()}
     if found - expected:
         raise RuntimeError("Unexpected KPM dependencies: " + repr(found - expected))
