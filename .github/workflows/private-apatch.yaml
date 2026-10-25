@@ -1,4 +1,4 @@
-name: Blazer - private APatch test (draft download only)
+name: Blazer - private APatch KPM test (draft download only)
 
 'on':
   workflow_dispatch:
@@ -104,6 +104,11 @@ jobs:
               text = replace_once(text,
                   "      printRed 'Warning: KernelPatch could not resolve the arm64 relocation table and used its relative-base kallsyms path.'\n",
                   "      printRed 'KernelPatch used relative-base symbol lookup; checking its validation results.'\n      for required in \\\n        'try kallsyms_offsets first for 64-bit relative-base kernel' \\\n        'kallsyms_offsets offset: 0x' \\\n        'pid_vnr verfied sp_el0' \\\n        'memblock_phys_alloc_try_nid: type: t, offset: 0x' \\\n        'patch done: kernel'; do\n        if ! grep -Fq \"$required\" kptools-patch.log; then\n          printRed \"Relative-base validation is incomplete: $required\"\n          exit 1\n        fi\n      done\n      if grep -Eq 'pid_vnr verification failed|resolved symbol table only covers|can.t find kallsyms_num_syms|mismatch relo applied' kptools-patch.log; then\n        printRed 'KernelPatch symbol validation reported an inconsistency.'\n        exit 1\n      fi\n")
+              # Private KPM test: immutable inputs and explicit per-module boot events.
+              text = replace_once(text, "    ./kptools -p -i kernel.ori -k kpimg -o kernel 2>&1 | tee kptools-patch.log", "    ./kptools -p -i kernel.ori -k kpimg -o kernel \\\n      -M \"$PRIVATE_KPM_DIR/nohello.kpm\" -N nohello -V pre-kernel-init \\\n      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -N selinux_magisk_access_filter -V pre-kernel-init \\\n      -M \"$PRIVATE_KPM_DIR/re_kernel.kpm\" -N re_kernel -V post-kernel-init \\\n      -M \"$PRIVATE_KPM_DIR/demo-hello.kpm\" -N kpm-hello-demo -V post-kernel-init \\\n      2>&1 | tee kptools-patch.log\n    verifyPrivateKpms kernel")
+              text = replace_once(text, "  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"", "  preparePrivateKpms\n  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"")
+              text = replace_once(text, "    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then", "    verifyPrivateKpms kernel\n    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then")
+              text += "\nfunction preparePrivateKpms() {\n  local dir=\"$PWD/.tmp/private-kpms\"\n  mkdir -p \"$dir\"\n  export PRIVATE_KPM_DIR=\"$dir\"\n  local repo=\"$dir/nohello-source\"\n  git init \"$repo\"\n  git -C \"$repo\" remote add origin https://github.com/fatalcoder524/KPM_Repo.git\n  git -C \"$repo\" fetch --depth 1 origin 9490cd2bfd439fa148cf41fd584911851ac597f9\n  git -C \"$repo\" checkout --detach FETCH_HEAD\n  test \"$(git -C \"$repo\" rev-parse HEAD)\" = 9490cd2bfd439fa148cf41fd584911851ac597f9\n  cp \"$repo/NoHello/Nohello-v1.8.2.9-80-35888e6-release.kpm\" \"$dir/nohello.kpm\"\n  downloadVerifiedFile \"$dir/re_kernel.kpm\" \"https://github.com/lzghzr/APatch_kpm/releases/download/2026101600/re_kernel_11.7-20261010.kpm\" \"119ab0dee2f7ab779d0c6c8f8193ca07e9ceb315c9888579a6270ec628fabd18\"\n  downloadVerifiedFile \"$dir/demo-hello.kpm\" \"https://github.com/bmax121/KernelPatch/releases/download/0.13.9/demo-hello.kpm\" \"db436f009757563740e5af864588625104d7c1de2e6da69b6b742fc35f35668b\"\n  repo=\"$dir/selinux-source\"\n  git init \"$repo\"\n  git -C \"$repo\" remote add origin https://github.com/Admirepowered/selinux_hook.git\n  git -C \"$repo\" fetch --depth 1 origin 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  git -C \"$repo\" checkout --detach FETCH_HEAD\n  test \"$(git -C \"$repo\" rev-parse HEAD)\" = 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  make -C \"$repo/selinux_hook\" KP_DIR=\"$PWD/$KERNELPATCH_SOURCE_DIR\" TARGET_COMPILE=\"$KERNELPATCH_COMPILE_PREFIX\"\n  cp \"$repo/selinux_hook/selinux_hook_1.1.7.kpm\" \"$dir/selinux_hook.kpm\"\n  for file in nohello re_kernel demo-hello selinux_hook; do\n    test -s \"$dir/$file.kpm\"\n    .tmp/kptools-linux -l -M \"$dir/$file.kpm\" > \"$dir/$file.metadata.txt\"\n    grep -q 'name=' \"$dir/$file.metadata.txt\"\n  done\n  (cd \"$dir\" && sha256sum ./*.kpm > KPM-SHA256SUMS)\n}\n\nfunction verifyPrivateKpms() {\n  local kernel=\"$1\"\n  ./kptools -i \"$kernel\" -l > embedded-kpms.txt\n  python3 - embedded-kpms.txt <<'PY_KPM_VERIFY'\nimport re, sys\nfrom pathlib import Path\ntext = Path(sys.argv[1]).read_text()\nexpected = {\n    \"nohello\": \"pre-kernel-init\",\n    \"selinux_magisk_access_filter\": \"pre-kernel-init\",\n    \"re_kernel\": \"post-kernel-init\",\n    \"kpm-hello-demo\": \"post-kernel-init\",\n}\nfor name, event in expected.items():\n    pattern = r\"(?m)^name=\" + re.escape(name) + r\"\\r?\\n\" + r\"event=\" + re.escape(event) + r\"\\r?$\"\n    if not re.search(pattern, text):\n        raise SystemExit(\"Missing KPM or incorrect boot event: \" + name)\nprint(\"Verified all four embedded KPM names and boot events.\")\nPY_KPM_VERIFY\n}\n"
               (builder / "rooted-ota.private.sh").write_text(text, encoding="utf-8", newline="\n")
               (builder / "run-private.sh").write_text(BUILD_SH, encoding="utf-8", newline="\n")
               run("bash", "-n", str(builder / "rooted-ota.private.sh"))
@@ -147,6 +152,8 @@ jobs:
           downloadVerifiedFile .tmp/apatch-manager.apk "$APATCH_MANAGER_URL" "$APATCH_MANAGER_SHA256"
           cp .tmp/apatch-manager.apk "dist/APatch-${APATCH_VERSION}-release-signed.apk"
           cp -- "$CERT_OTA" dist/ota.crt
+          cp .tmp/private-kpms/*.kpm .tmp/private-kpms/*.metadata.txt .tmp/private-kpms/KPM-SHA256SUMS dist/
+          cp ".tmp/apatch-${DEVICE_ID}-${OTA_VERSION}/embedded-kpms.txt" dist/KPM-EMBEDDED.txt
           export BUILD_OTA_VERSION="$OTA_VERSION" BUILD_APATCH_VERSION="$APATCH_VERSION"
           export BUILD_MANAGER_URL="$APATCH_MANAGER_URL" BUILD_MANAGER_SHA256="$APATCH_MANAGER_SHA256"
           python3 ../ota/.github/scripts/private_apatch.py manifest
@@ -168,6 +175,19 @@ jobs:
           Remove/disable the old Magisk modules before switching root implementations.
           Do not run multiple root implementations or multiple Zygisk loaders together.
           The official APatch manager APK is included for installation after the OS boots.
+          Embedded KPMs:
+          - NoHello 1.8.2.9-80, pre-kernel-init, repository commit 9490cd2bfd439fa148cf41fd584911851ac597f9.
+          - SELinux Magisk Access Filter 1.1.7, pre-kernel-init, source commit 8ad91d00b9abd0fb3191d968b74fdc502126f8ca.
+          - Re:Kernel 11.7-20261010, post-kernel-init. Needs a compatible freezer controller.
+          - KernelPatch demo-hello 0.13.9 release asset, post-kernel-init.
+          The rootless recovery OTA has NONE of these KPMs embedded.
+          KPM files and hashes are included for traceability; do not load duplicates.
+          Root hiding and runtime compatibility on GrapheneOS remain UNVERIFIED.
+          Check root dmesg for "kpm hello init" and the module names after boot.
+          APatch KPM list should show the four modules; listing alone does not prove their hooks work.
+          Re:Kernel does not freeze apps or save battery by itself.
+          Do not hot-unload these experimental modules; remove via a freshly signed OTA.
+          This build does not fix the previously observed apd crash.
           No Zygisk/LSPosed modules are preinstalled. These require separate compatibility
           testing; do not add modules until the virtual A/B snapshot merge has finished.
           
@@ -204,6 +224,13 @@ jobs:
               data = {
                   "device": "blazer", "grapheneos": version,
                   "hardware_tested": False, "builder_commit": BUILDER_COMMIT,
+                  "kpm_test": True,
+                  "kpm_sources": {
+                      "nohello": "fatalcoder524/KPM_Repo@9490cd2bfd439fa148cf41fd584911851ac597f9",
+                      "selinux_hook": "Admirepowered/selinux_hook@8ad91d00b9abd0fb3191d968b74fdc502126f8ca",
+                      "re_kernel": "lzghzr/APatch_kpm:2026101600/re_kernel_11.7-20261010.kpm",
+                      "demo-hello": "bmax121/KernelPatch:0.13.9/demo-hello.kpm"
+                  },
                   "kernelpatch_commit": KERNELPATCH_COMMIT,
                   "apatch": os.environ["BUILD_APATCH_VERSION"],
                   "manager_url": os.environ["BUILD_MANAGER_URL"],
@@ -237,10 +264,10 @@ jobs:
                   f'Private APatch test for blazer, GrapheneOS {data["grapheneos"]}.\n\n'
                   'NOT hardware-tested on blazer. Read READ-ME-FIRST.txt before flashing.\n'
                   'Signed using the existing repository AVB/OTA keys; all OTA signatures verified.\n'
-                  'Includes APatch OTA, rootless OTA, official manager APK and checksums.\n\n'
+                  'Includes APatch OTA with NoHello, Re:Kernel, SELinux Access Filter and demo-hello; clean rootless OTA, manager APK, KPM inputs and checksums.\n\n'
                   '**Keep as draft: publishing would expose these downloads publicly.**\n')
               request = {"tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
-                         "draft": True, "name": f'PRIVATE TEST | blazer {data["grapheneos"]} | APatch {data["apatch"]}',
+                         "draft": True, "name": f'PRIVATE KPM TEST | blazer {data["grapheneos"]} | APatch {data["apatch"]}',
                          "body": notes.read_text()}
               release = json.loads(run("gh", "api", "--method", "POST", f"repos/{repo}/releases", "--input", "-",
                   input=json.dumps(request), capture_output=True, text=True).stdout)
