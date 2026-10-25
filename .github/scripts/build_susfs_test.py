@@ -284,15 +284,20 @@ def main():
         validate_elf(data, 1 if name.endswith(".ko") else 3, name)
         files[("lib/" if name.endswith(".ko") else "bin/") + name] = data
     ko = files["lib/susfs_guard_lkm-android15-6.6.ko"]
-    vermagic = re.search(rb"(?:^|\\x00)vermagic=([^\\x00]+)", ko)
-    if not vermagic or not vermagic.group(1).startswith(b"6.6."):
-        raise RuntimeError("Wrong kernel generation in SUSFS module: " + repr(vermagic))
-    # DDK builds need not carry an Android generation tag in vermagic.
-    # The exact pinned asset hash above identifies the android15-6.6 build.
-    print("SUSFS pinned android15-6.6 asset vermagic:", vermagic.group(1).decode())
+    vermagic = re.search(rb"vermagic=([^\x00]+)", ko)
+    if vermagic:
+        print("SUSFS vermagic:", vermagic.group(1).decode(errors="replace"))
+        if not vermagic.group(1).startswith(b"6.6."):
+            raise RuntimeError("Wrong kernel version in the pinned asset")
+    else:
+        print("NOTE: pinned upstream asset has no vermagic record; generation is identified by release asset and SHA-256, not inferred from ELF metadata.")
+    inspected_ko = work / "susfs_guard_lkm.ko"
+    inspected_ko.write_bytes(ko)
+    run("readelf", "-h", str(inspected_ko))
+    subprocess.run(["readelf", "-p", ".modinfo", str(inspected_ko)], check=False)
     client = work / "susfs_sc"
     run("clang", "--target=aarch64-linux-gnu", "-O2", "-nostdlib", "-static-pie",
-        "-fno-stack-protector", "-fuse-ld=lld", "-Wl,-e,_start",
+        "-fno-stack-protector", "-fno-builtin", "-fuse-ld=lld", "-Wl,-e,_start",
         "-o", str(client), str(source / "tools/susfs_sc.c"))
     files["bin/susfs_sc"] = client.read_bytes()
     validate_elf(files["bin/susfs_sc"], 3, "susfs_sc")
@@ -316,7 +321,7 @@ def main():
         "integration": "separately installed APatch APM; boot-completed, single attempt",
         "kmi": "android15-6.6", "root_manager": "APatch 11282",
         "uses_apatch_exclusion_list": False,
-        "client_build": "clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie -fno-stack-protector -fuse-ld=lld -Wl,-e,_start",
+        "client_build": "clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie -fno-stack-protector -fno-builtin -fuse-ld=lld -Wl,-e,_start",
     }
     files["provenance.json"] = (json.dumps(provenance, indent=2) + "\n").encode()
     # APatch deletes customize.sh after installation and module.prop is a mutable status card.
