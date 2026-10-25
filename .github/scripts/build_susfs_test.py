@@ -21,7 +21,7 @@ ASSETS = {
         "16a722d2158ff629e9e3d6d056e8333f15971410965ce5894216ed80dbfa44a4",
 }
 MODULE_ID = "susfs_apatch_test"
-ZIP_NAME = "SUSFS-APatch-test-v2.3.0-r18.4-blazer.zip"
+ZIP_NAME = "SUSFS-APatch-test2-v2.3.0-r18.4-blazer.zip"
 
 CUSTOMIZE = r'''#!/system/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
@@ -33,7 +33,7 @@ REL=$(cat /proc/sys/kernel/osrelease) || abort "- Cannot read kernel release."
 KMI=$(select_kmi "$REL" "$MODPATH") || abort "- No matching KMI for $REL (requires android15-6.6)."
 (cd "$MODPATH" && sha256sum -c SHA256SUMS) || abort "- Payload integrity check failed."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
-for f in boot-completed.sh load.sh action.sh rearm.sh; do
+for f in boot-completed.sh load.sh action.sh rearm.sh bbr.sh; do
   set_perm "$MODPATH/$f" 0 0 0755
 done
 set_perm "$MODPATH/bin/susfs_insmod" 0 0 0755
@@ -50,6 +50,8 @@ BOOT_COMPLETED = r'''#!/system/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
 MODDIR=$(dirname "$0")
 # APatch 11282 supports this non-blocking stage; never use post-fs-data here.
+(cd "$MODDIR" && sha256sum -c SHA256SUMS) || exit 1
+/system/bin/sh "$MODDIR/bbr.sh"
 exec /system/bin/sh "$MODDIR/load.sh"
 '''
 
@@ -100,6 +102,12 @@ KMI=$(select_kmi "$REL" "$MODDIR") || {
   exit 1
 }
 dmesg > "$MODDIR/dmesg-before.txt" 2>&1
+/system/bin/truncate su module info susfs_sig_allow > "$MODDIR/adapter-info.txt" 2>&1
+if ! grep -q 'susfs_sig_allow' "$MODDIR/adapter-info.txt"; then
+  status "BLOCKED: signature adapter missing; install the matching test2 OTA first"
+  snapshot
+  exit 1
+fi
 status "ATTEMPTING: $KMI; interrupted attempts are not retried"
 sync
 "$MODDIR/bin/susfs_insmod" "$MODDIR/lib/susfs_guard_lkm-$KMI.ko" expose_proc=1
@@ -155,6 +163,14 @@ OUT="$MODDIR/diagnostics.txt"
   date
   id
   cat /proc/sys/kernel/osrelease
+  echo "--- BBR live settings ---"
+  for key in tcp_available_congestion_control tcp_congestion_control; do
+    printf '%s=' "$key"; cat "/proc/sys/net/ipv4/$key"
+  done
+  printf 'default_qdisc='; cat /proc/sys/net/core/default_qdisc
+  cat /system/etc/private-bbr.json "$MODDIR/bbr.log" 2>/dev/null
+  echo "--- Module loading restrictions ---"
+  cat /proc/sys/kernel/modules_disabled /sys/module/module/parameters/sig_enforce 2>/dev/null
   echo "--- Last attempt ---"
   cat "$MODDIR/status.txt" 2>/dev/null
   if [ -e /proc/susfs_path ]; then
@@ -163,7 +179,7 @@ OUT="$MODDIR/diagnostics.txt"
     echo "Live SUSFS control node: absent or inaccessible"
   fi
   echo "--- Loader and ABI logs ---"
-  cat "$MODDIR/load.log" "$MODDIR/abi-version.txt" "$MODDIR/abi-variant.txt" "$MODDIR/mount-command.txt" 2>/dev/null
+  cat "$MODDIR/load.log" "$MODDIR/abi-version.txt" "$MODDIR/abi-variant.txt" "$MODDIR/mount-command.txt" "$MODDIR/adapter-info.txt" 2>/dev/null
   echo "--- Saved control-node snapshots ---"
   for f in susfs_path susfs_hide_mounts susfs_kstat susfs_opath; do
     cat "$MODDIR/$f.txt" 2>/dev/null
@@ -195,55 +211,86 @@ printf '%s\n' "ARMED: one attempt after the next completed boot" > "$MODDIR/stat
 echo "One test attempt armed for the next reboot."
 '''
 
-NOTES = """SUSFS LKM + APatch private test for Pixel 10 Pro (blazer)
 
-This is an APatch AndroidPatch Module (APM), NOT a .kpm and NOT an OTA.
-It uses inforcqb/susfs4ksu-lkm v2.3.0-r18.4, not sidex15's helper module.
-The OTA in this release embeds only the existing SELinux filter KPM.
-Installing the OTA alone does NOT install or load SUSFS.
+BBR = r'''#!/system/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+MODDIR=$(dirname "$0")
+umask 077
+exec > "$MODDIR/bbr.log" 2>&1
+[ "$(id -u)" = 0 ] || exit 1
+echo "BBR runtime verification: $(date)"
+available=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control)
+echo "Available: $available"
+chosen=""
+for candidate in bbr3 bbr2 bbr; do
+  case " $available " in *" $candidate "*) ;; *) continue ;; esac
+  if printf '%s\n' "$candidate" > /proc/sys/net/ipv4/tcp_congestion_control; then
+    chosen="$candidate"
+    break
+  fi
+done
+if [ -z "$chosen" ]; then
+  echo "FAILED: no available BBR variant accepted; current setting unchanged"
+  exit 1
+fi
+# The OTA profile identifies bbr as v1 for this exact kernel. The sysctl name
+# alone cannot distinguish a future BBRv3 implementation also called bbr.
+printf 'fq\n' > /proc/sys/net/core/default_qdisc || echo "fq default write failed"
+actual=$(cat /proc/sys/net/ipv4/tcp_congestion_control)
+echo "Selected: $chosen; readback: $actual"
+echo "qdisc default: $(cat /proc/sys/net/core/default_qdisc)"
+[ "$actual" = "$chosen" ]
+'''
 
-1. Install the signed APatch OTA only if you still need that OS/root build.
-   If already running this same SELinux-only APatch build, an OTA reflash
-   is not required just to test the companion module.
-2. Wait for any virtual A/B update/snapshot merge to finish.
-3. In APatch, install SUSFS-APatch-test-v2.3.0-r18.4-blazer.zip under
-   AndroidPatch Modules / AP modules, NOT under KernelPatch Modules.
-4. Reboot. The module makes ONE load attempt after sys.boot_completed=1.
-5. Use the module's Action button to show/export diagnostics:
-   Download/susfs-apatch-test-log.txt.
-   Logs also remain at /data/adb/modules/susfs_apatch_test/.
+NOTES = """SUSFS signature-adapter test2 + automatic BBR for blazer
 
-Scope and checks:
-- Only blazer, arm64, KMI android15-6.6 (or unambiguous tagless 6.6).
-  The Android tag is the KMI generation, not the installed Android release.
-- Upstream loader and .ko downloads are pinned by SHA-256.
-- Checksums are also verified on installation and before a runtime load.
-- Existing SUSFS is skipped; no second load is attempted.
-- Attempt marker is persisted before loading, preventing repeated panics
-  from the same automatic test on subsequent boots.
-- Loader exit code, SUSFS ABI response, rule command results and kernel
-  diagnostics are recorded separately. They do not prove apps are fooled.
-- Minimal rules: /data/adb plus existing /debug_ramdisk, /sbin/.magisk,
-  /dev/.magisk paths; mount hiding limited to /data/adb/.
-- No uname/bootconfig spoofing, audit-log spoofing, permissive SELinux,
-  Zygisk injection or sidex15 scripts are added.
-- APatch has no KernelSU exclusion predicate. The upstream LKM falls back
-  to app UID based hiding; APatch's per-app grant/exclusion list is NOT used.
-- This build does NOT fix the previously observed APatch apd crash.
-  If AP modules/boot-completed scripts do not run, SUSFS will not autoload.
-- A normal userspace load failure is logged. A kernel panic is still
-  possible: loading third-party kernel hooks is not made safe by logging.
+Install the matching NEW test2 signed APatch OTA before installing this AP module.
+The OTA embeds SELinux filter + susfs_sig_allow and configures bbr/fq through init.
+The rootless OTA has neither KPMs nor the BBR startup actions.
 
-The first load attempt remains disarmed even after success: this is a
-hardware test, not persistent production hiding. After reboot the LKM is
-gone. To run another test AFTER that reboot, as root:
-  sh /data/adb/modules/susfs_apatch_test/rearm.sh
-Then reboot once more. No live hot-unload or same-boot retry is provided.
+SUSFS-APatch-test2-v2.3.0-r18.4-blazer.zip is an AP module, NOT a KPM or OTA.
+Update/install it in APatch AndroidPatch Modules after snapshot merge is finished.
+It replaces test1 (same module ID), provides a rebuilt static-PIE loader, verifies
+the signature adapter is present, and attempts SUSFS once after boot completed.
+The signature KPM is restricted to the EXACT normalized SUSFS .ko fingerprint
+and the tested kernel 6.6.144-android15-8-g92137a1ac9ec-4k. It changes no global
+signature setting. Other images retain the original signature-check result.
+The kernel may still log the ORIGINAL signature rejection immediately before the
+adapter's explicit acceptance line. Read the full sequence, not one line alone.
 
-To stop: disable/remove this AP module and reboot. The rootless OTA cannot
-delete /data/adb modules, so disable this module before switching back to
-a rooted build. Preserve diagnostics before removal.
-Keep the release private (draft) and check SHA256SUMS.
+Test2 fixes the loader's missing static-PIE self-relocation and smoke-tests its
+error-reporting path under QEMU. The underlying SUSFS LKM is still the pinned
+inforcqb v2.3.0-r18.4 release. It has not been tested on this physical phone.
+Overcoming the signature gate does NOT prove kernel ABI/CFI/hook compatibility.
+On failure/interruption the attempt remains disarmed across reboots.
+Do not hot-unload the embedded signature adapter or the LKM.
+
+BBR:
+- The actual OTA kernel config and exact GrapheneOS source commit are inspected.
+- The existing implementation is BBRv1. No BBRv2/v3 code is added.
+- Init selects bbr + fq at post-fs-data and boot-completed on EVERY boot.
+- The AP module separately checks runtime availability, selects the highest
+  available named variant bbr3/bbr2/bbr and logs readback on every completed boot.
+- BBR configuration is independent of the one-shot SUSFS attempt.
+- This does not change QUIC/UDP congestion control or force existing socket choices.
+- The compiled kernel default remains untouched; startup sets the running default.
+- default_qdisc does not replace existing per-interface qdiscs.
+
+Use the module Action button after reboot. It exports:
+  Download/susfs-apatch-test-log.txt
+including BBR readback, signature-adapter info, loader and kernel diagnostics.
+Module logs also remain at /data/adb/modules/susfs_apatch_test/.
+
+The first SUSFS attempt remains disarmed even after success. After a reboot,
+as root, run sh /data/adb/modules/susfs_apatch_test/rearm.sh, then reboot again
+to arm one more test. BBR startup settings do not need rearming.
+Existing SUSFS is skipped. No second SUSFS loader or sidex15 helper is installed.
+APatch exclusion lists are not used by the LKM: upstream app-UID gating applies.
+NoHello, ReKernel and demo-hello remain removed.
+Disable/remove this AP module and reboot to stop runtime SUSFS attempts.
+Removing the embedded signature adapter or OTA BBR settings requires a newly
+signed OTA; the supplied rootless OTA contains neither. Data modules persist.
+Keep this release a draft and verify SHA256SUMS before installation.
 """
 
 def run(*args, **kwargs):
@@ -299,14 +346,84 @@ def main():
     run("clang", "--target=aarch64-linux-gnu", "-O2", "-nostdlib", "-static-pie",
         "-fno-stack-protector", "-fno-builtin", "-fuse-ld=lld", "-Wl,-e,_start",
         "-o", str(client), str(source / "tools/susfs_sc.c"))
+    # Freestanding -static-pie has no CRT to apply .rela.dyn. The upstream
+    # entry called C directly, so global string-pointer tables could fault.
+    loader_source = (source / "tools/susfs_insmod.c").read_text()
+    old_entry = '"\\tmov\\tx29, #0\\n"\n"\\tldr\\tx0, [sp]\\n"'
+    new_entry = (
+        '"\\tmov\\tx29, #0\\n"\n'
+        '"\\tadrp\\tx0, __ehdr_start\\n"\n'
+        '"\\tadd\\tx0, x0, :lo12:__ehdr_start\\n"\n'
+        '"\\tadrp\\tx1, _DYNAMIC\\n"\n'
+        '"\\tadd\\tx1, x1, :lo12:_DYNAMIC\\n"\n'
+        '"\\tbl\\tsusfs_relocate\\n"\n'
+        '"\\tldr\\tx0, [sp]\\n"')
+    if loader_source.count(old_entry) != 1:
+        raise RuntimeError("Upstream loader entry differs from reviewed source")
+    loader_source = loader_source.replace(old_entry, new_entry, 1)
+    relocator = r'''
+/* Private wrapper addition: apply ELF64 R_AARCH64_RELATIVE before using C data. */
+void susfs_relocate(unsigned long base, long *dyn)
+{
+    unsigned long rela = 0, size = 0;
+    for (; dyn[0]; dyn += 2) {
+        if (dyn[0] == 7) rela = (unsigned long)dyn[1];
+        if (dyn[0] == 8) size = (unsigned long)dyn[1];
+    }
+    if (!rela) return;
+    unsigned long *r = (unsigned long *)(base + rela);
+    for (unsigned long off = 0; off < size; off += 24, r += 3) {
+        if ((unsigned int)r[1] == 1027)
+            *(unsigned long *)(base + r[0]) = base + r[2];
+    }
+}
+'''
+    loader_source += relocator
+    selftest = r'''
+    /* Does not open a module, read kallsyms, or call init_module. */
+    if (argc == 2 && s_eq_n(argv[1], "--selftest", 11)) {
+        static const char record[] = "module verification failed: selftest\n";
+        for (u64 t = 0; t < sizeof(record); ++t) kbuf[t] = record[t];
+        kbuf_len = sizeof(record) - 1;
+        kmsg_report();
+        o_put(P "SELFTEST OK: relocated pointer tables and error reporting\n");
+        o_flush();
+        finish(0);
+    }
+'''
+    anchor = "\t/* ---- argv ---- */"
+    if loader_source.count(anchor) != 1:
+        raise RuntimeError("Upstream loader argument block differs")
+    loader_source = loader_source.replace(anchor, selftest + "\n" + anchor, 1)
+    patched_loader = work / "susfs_insmod-pie.c"
+    patched_loader.write_text(loader_source)
+    loader = work / "susfs_insmod"
+    run("clang", "--target=aarch64-linux-gnu", "-O2", "-nostdlib", "-static-pie",
+        "-fPIC", "-fno-stack-protector", "-fno-builtin", "-fuse-ld=lld",
+        "-Wl,-Bsymbolic", "-Wl,-e,_start", "-o", str(loader), str(patched_loader))
+    relocations = run("readelf", "-rW", str(loader), capture_output=True, text=True).stdout
+    if any("R_AARCH64_" in line and "R_AARCH64_RELATIVE" not in line for line in relocations.splitlines()):
+        raise RuntimeError("Loader has relocations not supported by its self-relocator")
+    for attempt in range(3):
+        result = run("qemu-aarch64", str(loader), "--selftest", capture_output=True, text=True)
+        if "SELFTEST OK" not in result.stdout:
+            raise RuntimeError("Loader self-test output missing")
+    bad_file = subprocess.run(["qemu-aarch64", str(loader), "/nonexistent/susfs.ko"],
+                              capture_output=True, text=True)
+    if bad_file.returncode != 2 or "ENOENT" not in bad_file.stdout:
+        raise RuntimeError("Loader missing-file error path is broken: " + repr(bad_file))
+    files["bin/susfs_insmod"] = loader.read_bytes()
+    validate_elf(files["bin/susfs_insmod"], 3, "rebuilt susfs_insmod")
+    print("PASS: loader static-PIE relocation and error paths under QEMU")
+
     files["bin/susfs_sc"] = client.read_bytes()
     validate_elf(files["bin/susfs_sc"], 3, "susfs_sc")
     strings = {
-        "module.prop": f"id={MODULE_ID}\nname=SUSFS APatch - private test\nversion={TAG}-apatch-test1\n"
-                       "versionCode=2026102501\nauthor=inforcqb; APatch test wrapper: Artemis311\n"
+        "module.prop": f"id={MODULE_ID}\nname=SUSFS APatch - private test\nversion={TAG}-apatch-test2\n"
+                       "versionCode=2026102502\nauthor=inforcqb; APatch test wrapper: Artemis311\n"
                        "description=ARMED: one SUSFS load attempt after boot completed; hardware untested\n",
         "customize.sh": CUSTOMIZE, "boot-completed.sh": BOOT_COMPLETED,
-        "load.sh": LOAD, "action.sh": ACTION, "rearm.sh": REARM,
+        "load.sh": LOAD, "action.sh": ACTION, "rearm.sh": REARM, "bbr.sh": BBR,
         "paths.txt": "/data/adb\n/debug_ramdisk\n/sbin/.magisk\n/dev/.magisk\n",
         "kmis": "android15-6.6\n", "skip_mount": "", "README.txt": NOTES,
     }
@@ -314,12 +431,15 @@ def main():
     files["kmi.sh"] = (source / "module/kmi.sh").read_bytes()
     files["LICENSE"] = (source / "LICENSE").read_bytes()
     files["sources/susfs_sc.c"] = (source / "tools/susfs_sc.c").read_bytes()
-    files["sources/susfs_insmod.c"] = (source / "tools/susfs_insmod.c").read_bytes()
+    files["sources/susfs_insmod.c"] = patched_loader.read_bytes()
     provenance = {
         "repository": f"https://github.com/{REPO}", "tag": TAG, "commit": COMMIT,
         "upstream_assets_sha256": ASSETS, "tested_on_hardware": False,
         "integration": "separately installed APatch APM; boot-completed, single attempt",
         "kmi": "android15-6.6", "root_manager": "APatch 11282",
+        "loader": "locally rebuilt with static-PIE self-relocation; QEMU smoke tests passed",
+        "requires_embedded_kpm": "susfs_sig_allow",
+        "loader_sha256": sha(files["bin/susfs_insmod"]),
         "uses_apatch_exclusion_list": False,
         "client_build": "clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie -fno-stack-protector -fno-builtin -fuse-ld=lld -Wl,-e,_start",
     }
