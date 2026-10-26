@@ -6,6 +6,7 @@ name: Private SUSFS companion hotfix (existing test2 OTA)
     branches: [main]
     paths:
       - .github/workflows/private-susfs-companion.yaml
+      - .github/scripts/build_susfs_test.py
 
 permissions:
   contents: read
