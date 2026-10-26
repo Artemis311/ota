@@ -129,6 +129,12 @@ def main():
         magic = re.search(rb"(?:^|\x00)vermagic=([^\x00]+)", path.read_bytes())
         if not magic or magic.group(1).split(b" ", 1)[0].decode() != release:
             raise RuntimeError("Rebuilt module/kernel release mismatch: " + path.name)
+        original = result.parent / "pixel-stock/grapheneos/muzel" / path.name
+        for field in ("name", "depends", "alias", "softdep", "import_ns", "license"):
+            before = run("modinfo", "-F", field, str(original), capture_output=True, text=True).stdout.splitlines()
+            after = run("modinfo", "-F", field, str(path), capture_output=True, text=True).stdout.splitlines()
+            if sorted(before) != sorted(after):
+                raise RuntimeError("Driver metadata/depmod compatibility changed: " + path.name + ":" + field)
         check_signature(path, trusted, work)
         imports = run("modprobe", "--dump-modversions", str(path), capture_output=True, text=True).stdout
         for line in imports.splitlines():
