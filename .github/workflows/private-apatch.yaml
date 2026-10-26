@@ -118,6 +118,9 @@ jobs:
               text = replace_once(text, "    patchAPatchBootImage\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"", "    patchAPatchBootImage\n    registerPatchModule 'private_bbr.py' 'PrivateBbrModule'\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"")
               text = replace_once(text, "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")", "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")\n        args+=(\"--module-private-bbr\" \".tmp/private-bbr\")")
               text = replace_once(text, "  expected=(\"Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ\")\n", "  expected=(\"Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ\"\n    \"Only in $dir/patched/system/fs_tree/system/etc/init: private_bbr.rc\"\n    \"Only in $dir/patched/system/fs_tree/system/etc: private-bbr.json\")\n  cmp \"$dir/patched/system/fs_tree/system/etc/init/private_bbr.rc\" .tmp/private-bbr/private_bbr.rc\n  cmp \"$dir/patched/system/fs_tree/system/etc/private-bbr.json\" .tmp/private-bbr/BBR-PROFILE.json\n")
+              # Read authenticated public metadata without exposing a token to the signing step.
+              text += "\nfunction githubApiGet() {\n  case \"$1\" in\n    https://api.github.com/repos/bmax121/APatch/releases/tags/11282)\n      cat \"$GITHUB_WORKSPACE/builder/release-metadata/apatch-11282.json\" ;;\n    https://api.github.com/repos/bmax121/KernelPatch/releases/tags/0.13.9)\n      cat \"$GITHUB_WORKSPACE/builder/release-metadata/kernelpatch-0.13.9.json\" ;;\n    *) printf 'Unexpected release metadata request: %s\\n' \"$1\" >&2; return 1 ;;\n  esac\n}\n"
+              text = text.replace("curl --fail -sL", "curl --fail --show-error --retry 3 --retry-all-errors -sL")
               (builder / "patch-modules/private_bbr.py").write_text((root / "ota/.github/scripts/private_bbr_module.py").read_text(), encoding="utf-8")
               (builder / "rooted-ota.private.sh").write_text(text, encoding="utf-8", newline="\n")
               (builder / "run-private.sh").write_text(BUILD_SH, encoding="utf-8", newline="\n")
@@ -301,6 +304,15 @@ jobs:
           git -C "$RUNNER_TEMP/rekernel-kp" fetch --depth 1 origin 280d32d967feb7ddc0fd1848aa1d1388807945d5
           git -C "$RUNNER_TEMP/rekernel-kp" checkout --detach FETCH_HEAD
           python3 ota/.github/scripts/build_rekernel_x.py "$RUNNER_TEMP/rekernel-kp" aarch64-linux-gnu- "$RUNNER_TEMP/rekernel-check"
+      - name: Resolve pinned public release metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p builder/release-metadata
+          gh api repos/bmax121/APatch/releases/tags/11282 > builder/release-metadata/apatch-11282.json
+          gh api repos/bmax121/KernelPatch/releases/tags/0.13.9 > builder/release-metadata/kernelpatch-0.13.9.json
+          jq -e '.tag_name == "11282" and .draft == false and .prerelease == false' builder/release-metadata/apatch-11282.json
+          jq -e '.tag_name == "0.13.9" and .draft == false and .prerelease == false' builder/release-metadata/kernelpatch-0.13.9.json
       - name: Build and verify APatch and rootless OTAs
         working-directory: builder
         shell: bash
