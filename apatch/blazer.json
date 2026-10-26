@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "full": {
+    "location_ota": "https://github.com/Artemis311/ota/releases/download/blazer-2026102101-apatch-11282-bbrv1/blazer-2026102101-apatch.zip",
+    "location_csig": "https://artemis311.github.io/ota/apatch/blazer-2026102101-apatch-11282-bbrv1.zip.csig"
+  },
+  "incremental": {}
+}
