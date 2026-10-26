@@ -80,6 +80,16 @@ def main():
     paths = set(re.findall(r"(?m)^diff --git a/(\S+) b/\S+$", patch_text))
     if paths != EXPECTED:
         raise RuntimeError("BBRv3 backport changes unexpected source paths")
+    # Preserve current ACK's tcp_in_ack_event call; omit an unrelated comment typo.
+    original_patch = patch
+    old_tlp_hunk = "@@ -3987,7 +4017,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)\n \ttcp_rack_update_reo_wnd(sk, &rs);\n \n \tif (tp->tlp_high_seq)\n-\t\ttcp_process_tlp_ack(sk, ack, flag);\n+\t\ttcp_process_tlp_ack(sk, ack, flag, &rs);\n \n \tif (tcp_ack_is_dubious(sk, flag)) {\n \t\tif (!(flag & (FLAG_SND_UNA_ADVANCED |\n"
+    new_tlp_hunk = "@@ -3987,7 +4017,7 @@ static int tcp_ack(struct sock *sk, const struct sk_buff *skb, int flag)\n \ttcp_in_ack_event(sk, flag);\n \n \tif (tp->tlp_high_seq)\n-\t\ttcp_process_tlp_ack(sk, ack, flag);\n+\t\ttcp_process_tlp_ack(sk, ack, flag, &rs);\n \n \tif (tcp_ack_is_dubious(sk, flag)) {\n \t\tif (!(flag & (FLAG_SND_UNA_ADVANCED |\n"
+    typo_hunk = "@@ -5608,7 +5639,7 @@ static void tcp_new_space(struct sock *sk)\n \tINDIRECT_CALL_1(sk->sk_write_space, sk_stream_write_space, sk);\n }\n \n-/* Caller made space either from:\n+/* Caller made space either from:->\n  * 1) Freeing skbs in rtx queues (after tp->snd_una has advanced)\n  * 2) Sent skbs from output queue (and thus advancing tp->snd_nxt)\n  *\n"
+    if patch_text.count(old_tlp_hunk) != 1 or patch_text.count(typo_hunk) != 1:
+        raise RuntimeError("BBRv3 patch differs from the reviewed backport")
+    patch_text = patch_text.replace(old_tlp_hunk, new_tlp_hunk, 1).replace(typo_hunk, "", 1)
+    patch = dest / "BBRv3-grapheneos-6.6.patch"
+    patch.write_text(patch_text)
     run("patch", "--dry-run", "--batch", "--fuzz=0", "-p1", "-d", str(common), "-i", str(patch))
     run("patch", "--batch", "--fuzz=0", "-p1", "-d", str(common), "-i", str(patch))
     source = common / "net/ipv4/tcp_bbr3.c"
@@ -117,7 +127,7 @@ def main():
         config_text = re.sub(r"(?m)^(?:" + name + r"=.*|# " + name + r" is not set)\n?", "", config_text)
         config_text += name + "=y\n"
     config.write_text(config_text)
-    shutil.copyfile(patch, dest / "BBRv3-android15-6.6.patch")
+    shutil.copyfile(original_patch, dest / "BBRv3-android15-6.6.patch")
     shutil.copyfile(source, dest / "tcp_bbr3-source.c")
     (dest / "pixel-source.patch").write_text(run("git", "-C", str(root), "diff",
                                                 capture_output=True, text=True).stdout)
@@ -129,7 +139,7 @@ def main():
         "submodules": submodules.splitlines(),
         "stock_prebuilts_commit": STOCK_COMMIT, "stock_modules": stock_modules,
         "patch_source": PATCH_REPO, "patch_commit": PATCH_COMMIT,
-        "patch_sha256": sha(patch), "bbr3_source_sha256": sha(source),
+        "patch_sha256": sha(original_patch), "rebased_patch_sha256": sha(patch), "bbr3_source_sha256": sha(source),
         "local_oom_fix_sha256": sha(dest / "BBRv3-private-oom.patch"),
         "allocation_failure": "per-socket Reno fallback, logged; BBRv3 remains global default",
         "hardware_tested": False, "validated": False,
