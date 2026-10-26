@@ -17,7 +17,7 @@ def main():
     dest.mkdir(parents=True, exist_ok=True)
     data = kernel.read_bytes()
     if ("Linux version " + KERNEL + " ").encode() not in data:
-        raise RuntimeError("This test's signature adapter requires the exact tested kernel")
+        raise RuntimeError("This BBRv1 profile requires the exact reviewed stock kernel")
     config = subprocess.run([tool, "-i", str(kernel), "-f"], check=True,
                             capture_output=True, text=True).stdout
     settings = dict(re.findall(r"(?m)^(CONFIG_[A-Z0-9_]+)=(.*)$", config))
@@ -32,7 +32,11 @@ def main():
         source = response.read()
     if b"bbr_lt_bw_sampling" not in source or b"bbr_pacing_gain[]" not in source or b"BBR_VERSION" in source:
         raise RuntimeError("BBR implementation differs from the reviewed v1 source")
+    if hashlib.sha256(source).hexdigest() != "ba7d0706259dfef5bf455f26ac4bab65f43b9209b9cfd4f761c64c89816bdfe4":
+        raise RuntimeError("Pinned stock BBRv1 source digest differs")
     fq = settings.get("CONFIG_NET_SCH_FQ") == "y"
+    if not fq:
+        raise RuntimeError("fq is not built into the reviewed stock kernel")
     actions = "    write /proc/sys/net/ipv4/tcp_congestion_control bbr\n"
     if fq:
         actions += "    write /proc/sys/net/core/default_qdisc fq\n"
