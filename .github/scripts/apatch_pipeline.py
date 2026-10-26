@@ -62,6 +62,10 @@ def prepare():
     # Read authenticated public metadata without exposing a token to the signing step.
     text += "\nfunction githubApiGet() {\n  case \"$1\" in\n    https://api.github.com/repos/bmax121/APatch/releases/tags/\"$APATCH_VERSION\")\n      cat \"$GITHUB_WORKSPACE/apatch-builder/release-metadata/apatch.json\" ;;\n    https://api.github.com/repos/bmax121/KernelPatch/releases/tags/0.13.9)\n      cat \"$GITHUB_WORKSPACE/apatch-builder/release-metadata/kernelpatch.json\" ;;\n    *) printf 'Unexpected release metadata request: %s\\n' \"$1\" >&2; return 1 ;;\n  esac\n}\n"
     text = text.replace("curl --fail -sL", "curl --fail --show-error --retry 3 --retry-all-errors -sL")
+    # grep -q can close the pipe while kptools is still writing; pipefail then
+    # mistakes SIGPIPE for a missing kernel feature. Consume the complete output.
+    text = text.replace("| grep -q 'CONFIG_KALLSYMS=y'", "| grep -F 'CONFIG_KALLSYMS=y' >/dev/null")
+    text = text.replace("| grep -q 'patched=true'", "| grep -F 'patched=true' >/dev/null")
     # Enable upstream's signed Custota system app and offline SELinux integration for APatch.
     text = replace_once(text,
         '        args+=("--patch-arg=--prepatched" "--patch-arg" "$APATCH_BOOT_IMAGE")',
