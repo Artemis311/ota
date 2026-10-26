@@ -1,0 +1,46 @@
+name: Check published Custota feeds
+'on':
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Publish verified APatch Custota feed
+      - Blazer - synchronized pixincreate and APatch releases
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  check:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: gh-pages
+        path: ota-site
+        persist-credentials: false
+    - name: Verify live feeds and APatch signature
+      env:
+        PAGE_URL: https://artemis311.github.io/ota/
+      run: |
+        set -euo pipefail
+        for flavor in pixincreate rootless apatch; do
+          curl --fail --silent --show-error --location --retry 8 --retry-all-errors --retry-delay 5 \
+            "${PAGE_URL%/}/$flavor/blazer.json" -o "$RUNNER_TEMP/$flavor.json"
+          python3 - "$RUNNER_TEMP/$flavor.json" "ota-site/$flavor/blazer.json" <<'PY'
+        import json, sys
+        assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])), "Live feed differs"
+        PY
+        done
+        python3 - <<'PY'
+        import hashlib, json, os, subprocess
+        from pathlib import Path
+        record = json.loads(Path("ota-site/apatch/manifest.json").read_text())
+        destination = Path(os.environ["RUNNER_TEMP"]) / "apatch.csig"
+        subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
+                        "--retry", "8", "--retry-all-errors", "--retry-delay", "5",
+                        os.environ["PAGE_URL"] + "apatch/" + record["signature"],
+                        "-o", str(destination)], check=True)
+        assert hashlib.sha256(destination.read_bytes()).hexdigest() == record["csig_sha256"]
+        print("Live APatch signature and all three feeds verified")
+        PY
