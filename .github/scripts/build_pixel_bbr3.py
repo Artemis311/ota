@@ -82,6 +82,31 @@ def main():
     run("patch", "--dry-run", "--batch", "--fuzz=0", "-p1", "-d", str(common), "-i", str(patch))
     run("patch", "--batch", "--fuzz=0", "-p1", "-d", str(common), "-i", str(patch))
     source = common / "net/ipv4/tcp_bbr3.c"
+    # The upstream Android backport moves BBR state out of icsk_ca_priv.
+    # Its void init callback previously returned on kmalloc failure while leaving
+    # BBR callbacks installed, which would dereference a NULL state later.
+    # This build requires BBR3=y: both BBR3 and Reno are built-in (owner=NULL),
+    # so no module/BPF owner reference is transferred by this local fallback.
+    before = source.read_text()
+    old_alloc = "\tbbr = kmalloc(sizeof(struct bbr3), GFP_ATOMIC);\n\tif (unlikely(!bbr))\n\t\treturn;"
+    new_alloc = (
+        "\t*bbr3_ptr = NULL;\n"
+        "\tbbr = kmalloc(sizeof(struct bbr3), GFP_ATOMIC);\n"
+        "\tif (unlikely(!bbr)) {\n"
+        "\t\tinet_csk(sk)->icsk_ca_ops = &tcp_reno;\n"
+        "\t\tmemset(inet_csk(sk)->icsk_ca_priv, 0, sizeof(inet_csk(sk)->icsk_ca_priv));\n"
+        "\t\tpr_warn_ratelimited(\"bbr3: state allocation failed; this socket uses Reno\\n\");\n"
+        "\t\treturn;\n"
+        "\t}"
+    )
+    if before.count(old_alloc) != 1:
+        raise RuntimeError("BBRv3 allocation path differs from the reviewed source")
+    after = before.replace(old_alloc, new_alloc, 1)
+    source.write_text(after)
+    import difflib
+    (dest / "BBRv3-private-oom.patch").write_text("".join(difflib.unified_diff(
+        before.splitlines(True), after.splitlines(True),
+        fromfile="a/net/ipv4/tcp_bbr3.c", tofile="b/net/ipv4/tcp_bbr3.c")))
     if not re.search(r'\.name\s*=\s*"bbr3"', source.read_text()):
         raise RuntimeError("Backport does not register bbr3")
     config = common / "arch/arm64/configs/gki_defconfig"
@@ -103,6 +128,8 @@ def main():
         "stock_prebuilts_commit": STOCK_COMMIT, "stock_modules": stock_modules,
         "patch_source": PATCH_REPO, "patch_commit": PATCH_COMMIT,
         "patch_sha256": sha(patch), "bbr3_source_sha256": sha(source),
+        "local_oom_fix_sha256": sha(dest / "BBRv3-private-oom.patch"),
+        "allocation_failure": "per-socket Reno fallback, logged; BBRv3 remains global default",
         "hardware_tested": False, "validated": False,
         "scope": "blazer / muzel, GrapheneOS 2026102101; compiled BBRv3 + matching modules",
     }
