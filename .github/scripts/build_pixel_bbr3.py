@@ -35,7 +35,8 @@ def sha(path):
 def checkout(url, commit, dest):
     run("git", "init", str(dest))
     run("git", "-C", str(dest), "remote", "add", "origin", url)
-    run("git", "-C", str(dest), "fetch", "--depth", "1", "origin", commit)
+    run("git", "-c", "http.lowSpeedLimit=1024", "-c", "http.lowSpeedTime=180", "-C", str(dest),
+        "fetch", "--progress", "--depth", "1", "origin", commit)
     run("git", "-C", str(dest), "checkout", "--detach", "FETCH_HEAD")
     actual = run("git", "-C", str(dest), "rev-parse", "HEAD", capture_output=True, text=True).stdout.strip()
     if actual != commit:
@@ -58,6 +59,7 @@ def main():
         pin = listing[0]
     if not re.fullmatch(r"[0-9a-f]{40}", pin):
         raise RuntimeError("Invalid Pixel source commit")
+    print("Resolved official Pixel source commit:", pin, flush=True)
     checkout(PIXEL_URL, pin, root)
     run("git", "-C", str(root), "submodule", "update", "--init", "--recursive", "--depth", "1", "--jobs", "2")
     common = root / "common"
@@ -140,6 +142,19 @@ def main():
         "--repo_manifest=" + str(root) + ":" + str(root / "aosp_manifest.xml"),
         "--jobs=2", cwd=root)
     dist = root / "out/muzel/dist"
+    # The OTA keeps its original device trees and load configuration.
+    # A source branch with changed DTS/driver startup requirements is not a
+    # compatible drop-in for this experiment, even if the TCP version matches.
+    preserved = ("dtbo.img", "lga-a0.dtb", "lga-b0.dtb",
+                 "init.insmod.blazer.cfg", "modules.load",
+                 "system_dlkm.modules.load", "vendor_dlkm.modules.load",
+                 "vendor_kernel_boot.modules.load",
+                 "system_dlkm.modules.blocklist", "vendor_dlkm.modules.blocklist")
+    for name in preserved:
+        rebuilt = dist / name
+        if not rebuilt.is_file() or sha(rebuilt) != sha(stock / name):
+            raise RuntimeError("Device tree/startup configuration differs from stock: " + name)
+    report["preserved_device_assets"] = {name: sha(stock / name) for name in preserved}
     image = dist / "Image"
     if image.is_file():
         shutil.copyfile(image, dest / "Image")
