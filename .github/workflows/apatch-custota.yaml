@@ -1,4 +1,5 @@
 name: Build APatch OTA with integrated Custota
+# Rebuild with the validated Custota profile.
 'on':
   workflow_dispatch:
   push:

@@ -66,7 +66,7 @@ def expectation(version, resolved):
         raise RuntimeError("Invalid shared GrapheneOS version")
     profile = {"builder": BUILDER, "kernelpatch": KP, "selinux": SELINUX,
                "source_ids": source_ids(), "tcp": "stock-bbrv1-fq", "schema": 1,
-               "custota": {"version": "6.7", "module_sha256": "e5a1480b53bfedc20e702541573683d6a68dacb7804792621dd7248c37ad97b6"}}}
+               "custota": {"version": "6.7", "module_sha256": "e5a1480b53bfedc20e702541573683d6a68dacb7804792621dd7248c37ad97b6"}}
     inputs = {"grapheneos": version, "apatch": resolved["version"],
               "manager_sha256": resolved["manager_sha256"], "profile": profile}
     fingerprint = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
