@@ -131,6 +131,22 @@ def main():
         modules[path.name] = path
     if set(stock_modules) - set(modules):
         raise RuntimeError("Missing rebuilt stock modules: " + repr(sorted(set(stock_modules) - set(modules))))
+    exports = {}
+    symvers_files = list(dist.glob("*symvers"))
+    if not symvers_files:
+        symvers_files = list((root / "out/muzel").rglob("Module.symvers"))
+    if not symvers_files:
+        raise RuntimeError("No modpost export table from the official Pixel build")
+    for table in symvers_files:
+        for line in table.read_text().splitlines():
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            crc, name = int(fields[0], 16), fields[1]
+            if name in exports and exports[name] != crc:
+                raise RuntimeError("Conflicting modpost export CRC: " + name)
+            exports[name] = crc
+    (dest / "module-exports.json").write_text(json.dumps(exports, sort_keys=True) + "\n")
     target = dest / "modules"
     target.mkdir()
     for name in stock_modules:
