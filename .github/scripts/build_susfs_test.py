@@ -21,7 +21,7 @@ ASSETS = {
         "16a722d2158ff629e9e3d6d056e8333f15971410965ce5894216ed80dbfa44a4",
 }
 MODULE_ID = "susfs_apatch_test"
-ZIP_NAME = "SUSFS-APatch-test2-v2.3.0-r18.4-blazer.zip"
+ZIP_NAME = "SUSFS-APatch-test2.1-v2.3.0-r18.4-blazer.zip"
 
 CUSTOMIZE = r'''#!/system/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
@@ -33,7 +33,7 @@ REL=$(cat /proc/sys/kernel/osrelease) || abort "- Cannot read kernel release."
 KMI=$(select_kmi "$REL" "$MODPATH") || abort "- No matching KMI for $REL (requires android15-6.6)."
 (cd "$MODPATH" && sha256sum -c SHA256SUMS) || abort "- Payload integrity check failed."
 set_perm_recursive "$MODPATH" 0 0 0755 0644
-for f in boot-completed.sh load.sh action.sh rearm.sh bbr.sh; do
+for f in boot-completed.sh load.sh action.sh rearm.sh bbr.sh adapter-check.sh; do
   set_perm "$MODPATH/$f" 0 0 0755
 done
 set_perm "$MODPATH/bin/susfs_insmod" 0 0 0755
@@ -102,9 +102,10 @@ KMI=$(select_kmi "$REL" "$MODDIR") || {
   exit 1
 }
 dmesg > "$MODDIR/dmesg-before.txt" 2>&1
-/system/bin/truncate su module info susfs_sig_allow > "$MODDIR/adapter-info.txt" 2>&1
-if ! grep -q 'susfs_sig_allow' "$MODDIR/adapter-info.txt"; then
-  status "BLOCKED: signature adapter missing; install the matching test2 OTA first"
+# KPM manager commands require the SuperKey even for UID 0. Never request,
+# persist, or log that secret. Use this boot's explicit hook/init success records.
+if ! /system/bin/sh "$MODDIR/adapter-check.sh" "$MODDIR/dmesg-before.txt" "$REL" > "$MODDIR/adapter-info.txt" 2>&1; then
+  status "BLOCKED: adapter boot evidence unavailable; inspect diagnostics"
   snapshot
   exit 1
 fi
@@ -212,6 +213,57 @@ echo "One test attempt armed for the next reboot."
 '''
 
 
+ADAPTER_CHECK = r'''#!/system/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Evidence from this boot, not a live authenticated KPM-manager query.
+# Hot-unloading the embedded adapter is unsupported; boot again before testing.
+[ "$2" = "6.6.144-android15-8-g92137a1ac9ec-4k" ] || {
+  echo "Unsupported kernel for the private signature adapter"
+  exit 4
+}
+[ -r "$1" ] || { echo "Cannot read current-boot kernel log"; exit 2; }
+if grep -Fq 'susfs_sig_allow: hook result=0 event=post-kernel-init; exact payload and tested kernel only' "$1" &&
+   grep -Fq 'KP load kpm: susfs_sig_allow, event: post-kernel-init, rc: 0' "$1"; then
+  echo "CONFIRMED: signature adapter initialized successfully in this boot"
+  echo "Method: current-boot kernel evidence; no SuperKey queried or stored"
+  exit 0
+fi
+echo "Adapter success records unavailable; no SUSFS load attempted"
+echo "The kernel log may have rotated, or adapter initialization failed"
+exit 1
+'''
+
+def test_adapter_check(work):
+    """Regression for the phone log: successful KPM, forbidden root-only query."""
+    script = work / "adapter-check.sh"
+    script.write_text(ADAPTER_CHECK)
+    fixture = work / "adapter-fixture.txt"
+    kernel = "6.6.144-android15-8-g92137a1ac9ec-4k"
+    hook = "[    1.043505] susfs_sig_allow: hook result=0 event=post-kernel-init; exact payload and tested kernel only\n"
+    loaded = "[    1.043518] KP load kpm: susfs_sig_allow, event: post-kernel-init, rc: 0\n"
+    cases = [
+        ("successful-boot", hook + loaded, kernel, 0),
+        ("legacy-root-query-error", "supercmd error message: invalid command or a superkey is required\n", kernel, 1),
+        ("name-only", "name: susfs_sig_allow\n", kernel, 1),
+        ("hook-failed", hook.replace("result=0", "result=-1") + loaded, kernel, 1),
+        ("kpm-failed", hook + loaded.replace("rc: 0", "rc: -1"), kernel, 1),
+        ("hook-only", hook, kernel, 1),
+        ("kpm-only", loaded, kernel, 1),
+        ("empty-log", "", kernel, 1),
+        ("wrong-kernel", hook + loaded, "6.6.145-other", 4),
+    ]
+    for label, log, release, expected in cases:
+        fixture.write_text(log)
+        result = subprocess.run(["sh", str(script), str(fixture), release],
+                                capture_output=True, text=True)
+        if result.returncode != expected:
+            raise RuntimeError(f"Adapter regression failed: {label}: {result}")
+    missing = subprocess.run(["sh", str(script), str(work / "missing-log"), kernel],
+                             capture_output=True, text=True)
+    if missing.returncode != 2:
+        raise RuntimeError("Missing adapter evidence did not fail closed")
+    print("PASS: adapter boot-evidence regression (10 positive/negative cases)")
+
 BBR = r'''#!/system/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
 MODDIR=$(dirname "$0")
@@ -242,21 +294,29 @@ echo "qdisc default: $(cat /proc/sys/net/core/default_qdisc)"
 [ "$actual" = "$chosen" ]
 '''
 
-NOTES = """SUSFS signature-adapter test2 + automatic BBR for blazer
+NOTES = """SUSFS signature-adapter test2.1 + automatic BBR for blazer
 
 Install the matching NEW test2 signed APatch OTA before installing this AP module.
 The OTA embeds SELinux filter + susfs_sig_allow and configures bbr/fq through init.
 The rootless OTA has neither KPMs nor the BBR startup actions.
 
-SUSFS-APatch-test2-v2.3.0-r18.4-blazer.zip is an AP module, NOT a KPM or OTA.
+SUSFS-APatch-test2.1-v2.3.0-r18.4-blazer.zip is an AP module, NOT a KPM or OTA.
 Update/install it in APatch AndroidPatch Modules after snapshot merge is finished.
-It replaces test1 (same module ID), provides a rebuilt static-PIE loader, verifies
+It replaces test1/test2 (same module ID), provides a rebuilt static-PIE loader, verifies
 the signature adapter is present, and attempts SUSFS once after boot completed.
 The signature KPM is restricted to the EXACT normalized SUSFS .ko fingerprint
 and the tested kernel 6.6.144-android15-8-g92137a1ac9ec-4k. It changes no global
 signature setting. Other images retain the original signature-check result.
 The kernel may still log the ORIGINAL signature rejection immediately before the
 adapter's explicit acceptance line. Read the full sequence, not one line alone.
+
+Test2.1 fixes the false "signature adapter missing" result: the old root-only
+KPM-manager query required a SuperKey. The check now requires BOTH successful
+hook initialization and KPM loading records from the current boot on the exact
+tested kernel. It fails closed if evidence is absent/unreadable/rotated.
+This is boot evidence, not an authenticated live module query. Never hot-unload
+the adapter between boot and this test. No SuperKey is requested or stored.
+The existing test2 OTA is compatible; no new OTA is needed for this AP-module fix.
 
 Test2 fixes the loader's missing static-PIE self-relocation and smoke-tests its
 error-reporting path under QEMU. The underlying SUSFS LKM is still the pinned
@@ -315,6 +375,7 @@ def main():
     dist.mkdir(parents=True, exist_ok=True)
     work = Path(".tmp/private-susfs")
     work.mkdir(parents=True, exist_ok=True)
+    test_adapter_check(work)
     source = work / "source"
     run("git", "init", str(source))
     run("git", "-C", str(source), "remote", "add", "origin", f"https://github.com/{REPO}.git")
@@ -421,11 +482,12 @@ void susfs_relocate(unsigned long base, long *dyn)
     files["bin/susfs_sc"] = client.read_bytes()
     validate_elf(files["bin/susfs_sc"], 3, "susfs_sc")
     strings = {
-        "module.prop": f"id={MODULE_ID}\nname=SUSFS APatch - private test\nversion={TAG}-apatch-test2\n"
-                       "versionCode=2026102502\nauthor=inforcqb; APatch test wrapper: Artemis311\n"
+        "module.prop": f"id={MODULE_ID}\nname=SUSFS APatch - private test\nversion={TAG}-apatch-test2.1\n"
+                       "versionCode=2026102601\nauthor=inforcqb; APatch test wrapper: Artemis311\n"
                        "description=ARMED: one SUSFS load attempt after boot completed; hardware untested\n",
         "customize.sh": CUSTOMIZE, "boot-completed.sh": BOOT_COMPLETED,
         "load.sh": LOAD, "action.sh": ACTION, "rearm.sh": REARM, "bbr.sh": BBR,
+        "adapter-check.sh": ADAPTER_CHECK,
         "paths.txt": "/data/adb\n/debug_ramdisk\n/sbin/.magisk\n/dev/.magisk\n",
         "kmis": "android15-6.6\n", "skip_mount": "", "README.txt": NOTES,
     }
@@ -441,6 +503,8 @@ void susfs_relocate(unsigned long base, long *dyn)
         "kmi": "android15-6.6", "root_manager": "APatch 11282",
         "loader": "locally rebuilt with static-PIE self-relocation; QEMU smoke tests passed",
         "requires_embedded_kpm": "susfs_sig_allow",
+        "adapter_check": "current-boot hook and KPM success records; no SuperKey",
+        "wrapper_version": "test2.1",
         "loader_sha256": sha(files["bin/susfs_insmod"]),
         "uses_apatch_exclusion_list": False,
         "client_build": "clang --target=aarch64-linux-gnu -O2 -nostdlib -static-pie -fno-stack-protector -fno-builtin -fuse-ld=lld -Wl,-e,_start",
