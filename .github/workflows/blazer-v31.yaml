@@ -90,6 +90,7 @@ jobs:
 
         sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"]) / "ota/.github/scripts"))
         from apatch_sync import stage_apatch, publish_apatch, rollback_apatch
+        from apatch_feed import prepare_feed, write_feed
 
         REPO = os.environ.get('GITHUB_REPOSITORY', '')
         PIXIN = 'pixincreate/Magisk'
@@ -346,7 +347,7 @@ jobs:
                 f.write(f'{name}={value}\n')
 
 
-        def sync_feed(manifest, tag):
+        def sync_feed(manifest, tag, apatch_metadata):
             repo_dir = Path(os.environ['GITHUB_WORKSPACE']) / 'ota'
             def git(*args):
                 return run('git', '-C', str(repo_dir), *args, capture_output=True, text=True).stdout.strip()
@@ -373,11 +374,12 @@ jobs:
                 folder.mkdir(exist_ok=True)
                 (folder / 'blazer.json').write_text(json.dumps({'version': 2, 'full': {
                     'location_ota': base, 'location_csig': base + '.csig'}, 'incremental': {}}, indent=2) + '\n')
+            apatch_paths = write_feed(repo_dir, apatch_metadata)
             old.write_text(json.dumps(manifest, indent=2) + '\n')
             # Monthly repository activity avoids 60-day inactivity during long OS release gaps.
             (repo_dir / 'last-check-month.txt').write_text(datetime.now(timezone.utc).strftime('%Y-%m') + '\n')
             git('add', '.nojekyll', 'server-owner.txt', 'index.html', 'pixincreate/blazer.json',
-                'rootless/blazer.json', 'BUILD_MANIFEST.json', 'last-check-month.txt')
+                'rootless/blazer.json', 'BUILD_MANIFEST.json', 'last-check-month.txt', *apatch_paths)
             if git('status', '--porcelain'):
                 git('commit', '-m', f'Publish/check blazer OTA {manifest["grapheneos"]}')
                 git('push', '--set-upstream', 'origin', 'gh-pages')
@@ -452,6 +454,7 @@ jobs:
             partner = stage_apatch(version, True)
             if partner['manifest']['grapheneos'] != manifest['grapheneos']:
                 raise RuntimeError('Companion OS version mismatch')
+            apatch_metadata = prepare_feed(partner)
             newly_published_magisk = bool(release['draft'])
             try:
                 if newly_published_magisk:
@@ -463,7 +466,7 @@ jobs:
                     gh('release', 'edit', tag, '--repo', REPO, '--draft=true')
                 rollback_apatch(partner)
                 raise
-            sync_feed(manifest, tag)
+            sync_feed(manifest, tag, apatch_metadata)
 
 
         if __name__ == '__main__':
@@ -516,7 +519,7 @@ jobs:
         PAGE_URL: ${{ steps.deployment.outputs.page_url }}
       run: |
         set -euo pipefail
-        for flavor in pixincreate rootless; do
+        for flavor in pixincreate rootless apatch; do
           curl --fail --silent --show-error --location --retry 8 --retry-all-errors --retry-delay 5 \
             "${PAGE_URL%/}/$flavor/blazer.json" -o "$RUNNER_TEMP/$flavor.json"
           python3 - "$RUNNER_TEMP/$flavor.json" "ota-site/$flavor/blazer.json" <<'PY'

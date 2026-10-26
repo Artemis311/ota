@@ -60,6 +60,7 @@ class PublicationTests(unittest.TestCase):
                          "build": lambda *a: events.append("build-magisk") or manifest,
                          "gh": gh, "stage_apatch": stage, "publish_apatch": publish,
                          "rollback_apatch": lambda p: events.append("rollback-apatch"),
+                         "prepare_feed": lambda p: events.append("sign-apatch") or Path(folder),
                          "sync_feed": lambda *a: events.append("feed")}
             with patch.dict(scope, overrides):
                 try:
@@ -77,7 +78,8 @@ class PublicationTests(unittest.TestCase):
 
     def test_both_ready_before_publication_and_feed(self):
         events = self.run_case()
-        self.assertLess(events.index("stage-apatch"), events.index("publish-magisk"))
+        self.assertLess(events.index("stage-apatch"), events.index("sign-apatch"))
+        self.assertLess(events.index("sign-apatch"), events.index("publish-magisk"))
         self.assertLess(events.index("publish-magisk"), events.index("publish-apatch"))
         self.assertLess(events.index("publish-apatch"), events.index("feed"))
 
@@ -211,6 +213,29 @@ class KernelChecks(unittest.TestCase):
         for bad in ({}, {**settings, "CONFIG_TCP_CONG_BBR3": "y"}, {**settings, "CONFIG_NET_SCH_FQ": "m"}):
             with self.assertRaises(RuntimeError):
                 bbr.validate_config(bad)
+
+class FeedChecks(unittest.TestCase):
+    def test_apatch_feed_preserves_other_channels_and_refuses_downgrade(self):
+        from apatch_feed import write_feed
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder) / "site"
+            prepared = Path(folder) / "prepared"
+            (repo / "pixincreate").mkdir(parents=True)
+            prepared.mkdir()
+            other = repo / "pixincreate/blazer.json"
+            other.write_text("unchanged")
+            record = {"grapheneos": "2026102101", "signature": "test.zip.csig"}
+            (prepared / "manifest.json").write_text(json.dumps(record))
+            (prepared / "blazer.json").write_text('{"version":2}')
+            (prepared / "test.zip.csig").write_bytes(b"signed metadata")
+            paths = write_feed(repo, prepared)
+            self.assertEqual(other.read_text(), "unchanged")
+            self.assertEqual(len(paths), 3)
+            self.assertEqual((repo / "apatch/test.zip.csig").read_bytes(), b"signed metadata")
+            record["grapheneos"] = "2026102001"
+            (prepared / "manifest.json").write_text(json.dumps(record))
+            with self.assertRaises(RuntimeError):
+                write_feed(repo, prepared)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

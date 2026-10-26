@@ -7,6 +7,7 @@ name: Validate synchronized OTA pipeline
       - .github/workflows/ota-validation.yaml
       - .github/scripts/apatch_pipeline.py
       - .github/scripts/apatch_sync.py
+      - .github/scripts/apatch_feed.py
       - .github/scripts/prepare_stock_bbr.py
       - .github/scripts/test_synchronized_ota.py
 permissions:
@@ -29,7 +30,7 @@ jobs:
       - name: Validate source, synchronization failure paths and YAML
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
-          python3 -m py_compile ota/.github/scripts/apatch_pipeline.py ota/.github/scripts/apatch_sync.py ota/.github/scripts/prepare_stock_bbr.py
+          python3 -m py_compile ota/.github/scripts/apatch_feed.py ota/.github/scripts/apatch_pipeline.py ota/.github/scripts/apatch_sync.py ota/.github/scripts/prepare_stock_bbr.py
           python3 ota/.github/scripts/test_synchronized_ota.py
           python3 ota/.github/scripts/apatch_pipeline.py prepare
       - name: Check read-only release resolution and existing companion reuse

@@ -1,0 +1,113 @@
+name: Publish verified APatch Custota feed
+'on':
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/apatch-feed.yaml]
+permissions:
+  contents: read
+concurrency:
+  group: blazer-ota-publisher
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    outputs:
+      deploy: 'true'
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        path: ota
+    - uses: actions/checkout@v4
+      with:
+        repository: schnatterer/rooted-graphene
+        ref: 80ff7950d1eb397c3c44c462a19570c1b7aaa8df
+        path: builder
+        persist-credentials: false
+    - name: Validate synchronization and feed code
+      run: |
+        python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
+        python3 -m py_compile ota/.github/scripts/apatch_feed.py
+        python3 ota/.github/scripts/test_synchronized_ota.py
+    - name: Sign and publish metadata for the existing verified APatch release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        KEY_OTA_BASE64: ${{ secrets.KEY_OTA_BASE64 }}
+        CERT_OTA_BASE64: ${{ secrets.CERT_OTA_BASE64 }}
+        PASSPHRASE_OTA: ${{ secrets.PASSPHRASE_OTA }}
+      run: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json, os, sys, subprocess
+        from pathlib import Path
+        root = Path(os.environ["GITHUB_WORKSPACE"])
+        sys.path.insert(0, str(root / "ota/.github/scripts"))
+        from apatch_sync import resolve_apatch, expectation, legacy_partner
+        from apatch_feed import prepare_feed, write_feed
+        partner = legacy_partner(expectation("2026102101", resolve_apatch()))
+        if not partner:
+            raise RuntimeError("Expected reviewed existing APatch release is unavailable")
+        # This repair job never rebuilds firmware or changes release attachments.
+        prepared = prepare_feed(partner)
+        repo = root / "ota"
+        def git(*args):
+            return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                                  capture_output=True, text=True).stdout.strip()
+        git("switch", "--create", "gh-pages", "--track", "origin/gh-pages")
+        if (repo / "server-owner.txt").read_text().strip() != "Artemis311/ota":
+            raise RuntimeError("Unexpected feed owner")
+        paths = write_feed(repo, prepared)
+        git("config", "user.name", "github-actions[bot]")
+        git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
+        git("add", *paths)
+        if git("status", "--porcelain"):
+            git("commit", "-m", "Publish signed APatch Custota update channel")
+            git("push", "origin", "gh-pages")
+        PY
+    - name: Remove temporary signing files and downloads
+      if: always()
+      run: rm -rf -- builder/.tmp apatch-feed
+  deploy-pages:
+    needs: build
+    if: needs.build.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - name: Check out public update feed
+      uses: actions/checkout@v4
+      with:
+        ref: gh-pages
+        path: ota-site
+        persist-credentials: false
+        fetch-depth: 1
+    - name: Configure Pages
+      uses: actions/configure-pages@v5
+    - name: Upload Pages site
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: ota-site
+    - name: Deploy Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
+    - name: Verify deployed Custota feed
+      env:
+        PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+      run: |
+        set -euo pipefail
+        for flavor in pixincreate rootless apatch; do
+          curl --fail --silent --show-error --location --retry 8 --retry-all-errors --retry-delay 5 \
+            "${PAGE_URL%/}/$flavor/blazer.json" -o "$RUNNER_TEMP/$flavor.json"
+          python3 - "$RUNNER_TEMP/$flavor.json" "ota-site/$flavor/blazer.json" <<'PY'
+        import json, sys
+        assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])), 'Deployed feed does not match the published release'
+        PY
+        done
