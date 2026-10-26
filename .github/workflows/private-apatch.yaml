@@ -1,4 +1,4 @@
-name: Blazer - private ReKernel-X and automatic BBRv1 (draft only)
+name: Blazer - private SELinux filter and automatic BBRv1 (draft only)
 
 'on':
   workflow_dispatch:
@@ -12,7 +12,6 @@ name: Blazer - private ReKernel-X and automatic BBRv1 (draft only)
     branches: [main]
     paths:
       - .github/workflows/private-apatch.yaml
-      - .github/scripts/build_rekernel_x.py
       - .github/scripts/prepare_private_bbr.py
       - .github/scripts/private_bbr_module.py
 
@@ -52,7 +51,7 @@ jobs:
             command -v "$tool" || exit 1
           done
           docker version
-          python3 -m py_compile ota/.github/scripts/prepare_private_bbr.py ota/.github/scripts/build_rekernel_x.py ota/.github/scripts/private_bbr_module.py
+          python3 -m py_compile ota/.github/scripts/prepare_private_bbr.py ota/.github/scripts/private_bbr_module.py
       - name: Prepare private build and validate shell syntax
         shell: bash
         run: |
@@ -109,13 +108,12 @@ jobs:
               text = replace_once(text,
                   "      printRed 'Warning: KernelPatch could not resolve the arm64 relocation table and used its relative-base kallsyms path.'\n",
                   "      printRed 'KernelPatch used relative-base symbol lookup; checking its validation results.'\n      for required in \\\n        'try kallsyms_offsets first for 64-bit relative-base kernel' \\\n        'kallsyms_offsets offset: 0x' \\\n        'pid_vnr verfied sp_el0' \\\n        'memblock_phys_alloc_try_nid: type: t, offset: 0x' \\\n        'patch done: kernel'; do\n        if ! grep -Fq \"$required\" kptools-patch.log; then\n          printRed \"Relative-base validation is incomplete: $required\"\n          exit 1\n        fi\n      done\n      if grep -Eq 'pid_vnr verification failed|resolved symbol table only covers|can.t find kallsyms_num_syms|mismatch relo applied' kptools-patch.log; then\n        printRed 'KernelPatch symbol validation reported an inconsistency.'\n        exit 1\n      fi\n")
-              # Verify the exact pinned SELinux filter and ReKernel-X KPM set.
+              # Embed and verify only the pinned SELinux filter.
               text = replace_once(text, "    ./kptools -p -i kernel.ori -k kpimg -o kernel 2>&1 | tee kptools-patch.log", "    ./kptools -p -i kernel.ori -k kpimg -o kernel \\\n      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n      2>&1 | tee kptools-patch.log\n    verifyPrivateKpms kernel")
               text = replace_once(text, "  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"", "  preparePrivateKpms\n  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"")
               text = replace_once(text, "    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then", "    verifyPrivateKpms kernel\n    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then")
-              text += "\nfunction preparePrivateKpms() {\n  local dir=\"$PWD/.tmp/private-kpms\"\n  mkdir -p \"$dir\"\n  export PRIVATE_KPM_DIR=\"$dir\"\n  local repo=\"$dir/selinux-source\"\n  git init \"$repo\"\n  git -C \"$repo\" remote add origin https://github.com/Admirepowered/selinux_hook.git\n  git -C \"$repo\" fetch --depth 1 origin 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  git -C \"$repo\" checkout --detach FETCH_HEAD\n  test \"$(git -C \"$repo\" rev-parse HEAD)\" = 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  make -C \"$repo/selinux_hook\" KP_DIR=\"$PWD/$KERNELPATCH_SOURCE_DIR\" TARGET_COMPILE=\"$KERNELPATCH_COMPILE_PREFIX\"\n  cp \"$repo/selinux_hook/selinux_hook_1.1.7.kpm\" \"$dir/selinux_hook.kpm\"\n  python3 \"$GITHUB_WORKSPACE/ota/.github/scripts/build_rekernel_x.py\" \"$PWD/$KERNELPATCH_SOURCE_DIR\" \"$KERNELPATCH_COMPILE_PREFIX\" \"$dir\"\n  for file in selinux_hook re_kernel_x; do\n    test -s \"$dir/$file.kpm\"\n    .tmp/kptools-linux -l -M \"$dir/$file.kpm\" > \"$dir/$file.metadata.txt\"\n    grep -q 'name=' \"$dir/$file.metadata.txt\"\n  done\n  (cd \"$dir\" && sha256sum ./*.kpm > KPM-SHA256SUMS)\n}\n\n\nfunction verifyPrivateKpms() {\n  local kernel=\"$1\"\n  ./kptools -i \"$kernel\" -l > embedded-kpms.txt\n  python3 - embedded-kpms.txt <<'PY_KPM_VERIFY'\nimport re, sys\nfrom pathlib import Path\ntext = Path(sys.argv[1]).read_text()\nentries = re.findall(r\"(?m)^name=([^\\r\\n]+)\\r?\\nevent=([^\\r\\n]+)\\r?$\", text)\nexpected = [(\"selinux_magisk_access_filter\", \"pre-kernel-init\"), (\"re_kernel_x\", \"post-kernel-init\")]\nif entries != expected:\n    raise SystemExit(\"Unexpected embedded KPM set or boot event: \" + repr(entries))\nprint(\"Verified exact embedded KPM set: SELinux filter and ReKernel-X.\")\nPY_KPM_VERIFY\n}\n"
+              text += "\nfunction preparePrivateKpms() {\n  local dir=\"$PWD/.tmp/private-kpms\"\n  mkdir -p \"$dir\"\n  export PRIVATE_KPM_DIR=\"$dir\"\n  local repo=\"$dir/selinux-source\"\n  git init \"$repo\"\n  git -C \"$repo\" remote add origin https://github.com/Admirepowered/selinux_hook.git\n  git -C \"$repo\" fetch --depth 1 origin 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  git -C \"$repo\" checkout --detach FETCH_HEAD\n  test \"$(git -C \"$repo\" rev-parse HEAD)\" = 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  make -C \"$repo/selinux_hook\" KP_DIR=\"$PWD/$KERNELPATCH_SOURCE_DIR\" TARGET_COMPILE=\"$KERNELPATCH_COMPILE_PREFIX\"\n  cp \"$repo/selinux_hook/selinux_hook_1.1.7.kpm\" \"$dir/selinux_hook.kpm\"\n  git -C \"$repo\" archive HEAD | gzip > \"$dir/selinux_hook-source.tar.gz\"\n  for file in selinux_hook; do\n    test -s \"$dir/$file.kpm\"\n    .tmp/kptools-linux -l -M \"$dir/$file.kpm\" > \"$dir/$file.metadata.txt\"\n    grep -q 'name=' \"$dir/$file.metadata.txt\"\n  done\n  (cd \"$dir\" && sha256sum ./*.kpm > KPM-SHA256SUMS)\n}\n\n\nfunction verifyPrivateKpms() {\n  local kernel=\"$1\"\n  ./kptools -i \"$kernel\" -l > embedded-kpms.txt\n  python3 - embedded-kpms.txt <<'PY_KPM_VERIFY'\nimport re, sys\nfrom pathlib import Path\ntext = Path(sys.argv[1]).read_text()\nentries = re.findall(r\"(?m)^name=([^\\r\\n]+)\\r?\\nevent=([^\\r\\n]+)\\r?$\", text)\nexpected = [(\"selinux_magisk_access_filter\", \"pre-kernel-init\")]\nif entries != expected:\n    raise SystemExit(\"Unexpected embedded KPM set or boot event: \" + repr(entries))\nprint(\"Verified exact embedded KPM set: SELinux filter only.\")\nPY_KPM_VERIFY\n}\n"
               # Retain the stock TCP implementation and select its built-in BBRv1 on boot.
-              text = replace_once(text, "      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n", "      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n      -M \"$PRIVATE_KPM_DIR/re_kernel_x.kpm\" -T kpm -V post-kernel-init \\\n")
               text = replace_once(text, "    mv kernel kernel.ori\n", "    mv kernel kernel.ori\n    python3 \"$GITHUB_WORKSPACE/ota/.github/scripts/prepare_private_bbr.py\" kernel.ori ./kptools ../private-bbr\n")
               text = replace_once(text, "    patchAPatchBootImage\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"", "    patchAPatchBootImage\n    registerPatchModule 'private_bbr.py' 'PrivateBbrModule'\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"")
               text = replace_once(text, "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")", "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")\n        args+=(\"--module-private-bbr\" \".tmp/private-bbr\")")
@@ -169,7 +167,7 @@ jobs:
           cp -- "$CERT_OTA" dist/ota.crt
           cp .tmp/private-kpms/*.kpm .tmp/private-kpms/*.metadata.txt .tmp/private-kpms/KPM-SHA256SUMS dist/
           cp ".tmp/apatch-${DEVICE_ID}-${OTA_VERSION}/embedded-kpms.txt" dist/KPM-EMBEDDED.txt
-          cp .tmp/private-kpms/*.build.json .tmp/private-kpms/*-source.tar.gz dist/
+          cp .tmp/private-kpms/selinux_hook-source.tar.gz dist/
           cp .tmp/private-bbr/BBR-PROFILE.json .tmp/private-bbr/private_bbr.rc .tmp/private-bbr/tcp_bbr-source.c dist/
           export BUILD_OTA_VERSION="$OTA_VERSION" BUILD_APATCH_VERSION="$APATCH_VERSION"
           export BUILD_MANAGER_URL="$APATCH_MANAGER_URL" BUILD_MANAGER_SHA256="$APATCH_MANAGER_SHA256"
@@ -177,21 +175,17 @@ jobs:
           '''
           
           
-          INSTALL_NOTES = """PRIVATE ReKernel-X + automatic stock BBRv1 for blazer.
+          INSTALL_NOTES = """PRIVATE SELinux filter + automatic stock BBRv1 for blazer.
           
           Hardware untested. Restricted to the reviewed GrapheneOS 2026102101 base;
           never downgrade a newer OS. Use this repository's existing OTA/AVB keys.
           The stock kernel's TCP code and the original driver set are retained.
           APatch embeds exactly:
           - SELinux Magisk Access Filter 1.1.7, pre-kernel-init.
-          - ReKernel-X 1.6-20261010 dynamic build, post-kernel-init.
           SUSFS, its signature adapter, NoHello and demo-hello are absent.
           Before updating, UNINSTALL the old susfs_apatch_test AP module and reboot.
           Data AP modules survive an OTA.
-          Do not load another ReKernel/ReKernel-X copy or hot-unload embedded KPMs.
-          
-          ReKernel-X provides events for a compatible freezer controller.
-          This OTA does not install or configure a controller.
+          Do not hot-unload the embedded KPM.
           
           BBRv1 and fq are verified as built into the actual stock OTA kernel.
           Init selects bbr + fq at post-fs-data and again at boot completion,
@@ -223,12 +217,10 @@ jobs:
               data = {
                   "device": "blazer", "grapheneos": version,
                   "hardware_tested": False, "builder_commit": BUILDER_COMMIT,
-                  "kpm_profile": "selinux-filter-plus-rekernel-x-no-susfs",
+                  "kpm_profile": "selinux-filter-only-no-susfs",
                   "bbr_profile": json.loads((dist / "BBR-PROFILE.json").read_text()),
-                  "rekernel_x": json.loads((dist / "re_kernel_x.build.json").read_text()),
                   "kpm_sources": {
-                      "selinux_hook": "Admirepowered/selinux_hook@8ad91d00b9abd0fb3191d968b74fdc502126f8ca",
-                      "re_kernel_x": "lzghzr/APatch_kpm@6ef236d224217a298c112d198c0e0f84c004ea6c"
+                      "selinux_hook": "Admirepowered/selinux_hook@8ad91d00b9abd0fb3191d968b74fdc502126f8ca"
                   },
                   "kernelpatch_commit": KERNELPATCH_COMMIT,
                   "apatch": os.environ["BUILD_APATCH_VERSION"],
@@ -263,10 +255,10 @@ jobs:
                   f'Private APatch test for blazer, GrapheneOS {data["grapheneos"]}.\n\n'
                   'NOT hardware-tested on blazer. Read READ-ME-FIRST.txt before flashing.\n'
                   'Signed using the existing repository AVB/OTA keys; all OTA signatures verified.\n'
-                  'Stock TCP code and drivers, automatic BBRv1 + fq at each boot, ReKernel-X and SELinux filter. SUSFS and the signature adapter are absent. Uninstall the old SUSFS AP module first. Hardware test still required. Read READ-ME-FIRST.txt.\n\n'
+                  'Stock TCP code and drivers, automatic BBRv1 + fq at each boot and the SELinux filter only. SUSFS and the signature adapter are absent. Uninstall the old SUSFS AP module first. Hardware test still required. Read READ-ME-FIRST.txt.\n\n'
                   '**Keep as draft: publishing would expose these downloads publicly.**\n')
               request = {"tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
-                         "draft": True, "name": f'PRIVATE APatch | ReKernel-X + BBRv1 | blazer {data["grapheneos"]} | {data["apatch"]}',
+                         "draft": True, "name": f'PRIVATE APatch | SELinux filter + BBRv1 | blazer {data["grapheneos"]} | {data["apatch"]}',
                          "body": notes.read_text()}
               release = json.loads(run("gh", "api", "--method", "POST", f"repos/{repo}/releases", "--input", "-",
                   input=json.dumps(request), capture_output=True, text=True).stdout)
