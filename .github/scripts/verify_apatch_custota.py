@@ -94,12 +94,13 @@ def verify(stock, patched, module, cert):
                     for source, dest in (("private_bbr.rc", "system/etc/init/private_bbr.rc"),
                                          ("BBR-PROFILE.json", "system/etc/private-bbr.json")):
                         shutil.copyfile(tools / "private-bbr" / source, expected / dest)
-                    # The OTA verifier separately checks signatures; require exactly our OTA cert.
+                # avbroot replaces the OTA trust store in both Android and the recovery ramdisk.
+                if part in ("system", "vendor_boot"):
                     relative = "system/etc/security/otacerts.zip"
                     with zipfile.ZipFile(actual / relative) as certificates:
                         contents = [certificates.read(n) for n in certificates.namelist() if not n.endswith("/")]
                     if contents != [cert.read_bytes()]:
-                        raise RuntimeError("Installed OTA trust certificate does not match this repository")
+                        raise RuntimeError("Installed OTA trust certificate does not match this repository: " + part)
                     shutil.copyfile(actual / relative, expected / relative)
                 if part in ("vendor", "vendor_boot"):
                     policy = "etc/selinux/precompiled_sepolicy" if part == "vendor" else "sepolicy"
