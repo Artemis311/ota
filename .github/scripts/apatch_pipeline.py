@@ -62,6 +62,18 @@ def prepare():
     # Read authenticated public metadata without exposing a token to the signing step.
     text += "\nfunction githubApiGet() {\n  case \"$1\" in\n    https://api.github.com/repos/bmax121/APatch/releases/tags/\"$APATCH_VERSION\")\n      cat \"$GITHUB_WORKSPACE/apatch-builder/release-metadata/apatch.json\" ;;\n    https://api.github.com/repos/bmax121/KernelPatch/releases/tags/0.13.9)\n      cat \"$GITHUB_WORKSPACE/apatch-builder/release-metadata/kernelpatch.json\" ;;\n    *) printf 'Unexpected release metadata request: %s\\n' \"$1\" >&2; return 1 ;;\n  esac\n}\n"
     text = text.replace("curl --fail -sL", "curl --fail --show-error --retry 3 --retry-all-errors -sL")
+    # Enable upstream's signed Custota system app and offline SELinux integration for APatch.
+    text = replace_once(text,
+        '        args+=("--patch-arg=--prepatched" "--patch-arg" "$APATCH_BOOT_IMAGE")',
+        '        args+=("--patch-arg=--prepatched" "--patch-arg" "$APATCH_BOOT_IMAGE")\n'
+        '        args+=("--module-custota" ".tmp/custota.zip")')
+    start = text.index("function verifyAPatchPartitions() {")
+    end = text.index("\nfunction downloadAvBroot()", start)
+    text = text[:start] + (
+        'function verifyAPatchPartitions() {\n'
+        '  python3 "$GITHUB_WORKSPACE/ota/.github/scripts/verify_apatch_custota.py" ".tmp/$OTA_TARGET.zip" "$1" ".tmp/custota.zip" "$CERT_OTA"\n'
+        '}\n'
+    ) + text[end:]
     (builder / "patch-modules/private_bbr.py").write_text((root / "ota/.github/scripts/private_bbr_module.py").read_text(), encoding="utf-8")
     (builder / "rooted-ota.private.sh").write_text(text, encoding="utf-8", newline="\n")
     (builder / "run-private.sh").write_text(BUILD_SH, encoding="utf-8", newline="\n")
@@ -104,6 +116,7 @@ for flavor in apatch; do
   cp -- ".tmp/$asset" "dist/$target"
 done
 cp -- "$CERT_OTA" dist/ota.crt
+cp .tmp/CUSTOTA-INTEGRATION.json dist/
 cp .tmp/private-kpms/*.kpm .tmp/private-kpms/*.metadata.txt .tmp/private-kpms/KPM-SHA256SUMS dist/
 cp ".tmp/apatch-${DEVICE_ID}-${OTA_VERSION}/embedded-kpms.txt" dist/KPM-EMBEDDED.txt
 cp .tmp/private-kpms/selinux_hook-source.tar.gz dist/
@@ -134,6 +147,7 @@ def manifest():
     data = {
         "device": "blazer", "grapheneos": version,
         "hardware_tested": False, "builder_commit": BUILDER_COMMIT,
+        "custota": json.loads((dist / "CUSTOTA-INTEGRATION.json").read_text()),
         "kpm_profile": "selinux-filter-only-no-susfs",
         "bbr_profile": json.loads((dist / "BBR-PROFILE.json").read_text()),
         "kpm_sources": {

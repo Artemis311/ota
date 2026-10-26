@@ -237,5 +237,30 @@ class FeedChecks(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 write_feed(repo, prepared)
 
+class CustotaIntegrationChecks(unittest.TestCase):
+    def test_unexpected_system_changes_are_rejected(self):
+        from verify_apatch_custota import compare
+        with tempfile.TemporaryDirectory() as folder:
+            left, right = Path(folder) / "expected", Path(folder) / "actual"
+            left.mkdir()
+            right.mkdir()
+            (left / "policy").write_bytes(b"reviewed rules")
+            (right / "policy").write_bytes(b"reviewed rules")
+            compare(left, right, "policy")
+            (right / "unexpected.apk").write_bytes(b"unreviewed")
+            with self.assertRaises(RuntimeError):
+                compare(left, right, "system")
+            (right / "unexpected.apk").unlink()
+            (right / "policy").write_bytes(b"different rules")
+            with self.assertRaises(RuntimeError):
+                compare(left, right, "policy")
+
+    def test_custota_is_part_of_release_identity(self):
+        with patch.object(ap, "source_ids", return_value={}):
+            manifest = ap.expectation("2026102101", {"version": "11282", "manager_sha256": "a" * 64})
+        self.assertEqual(manifest["profile"]["custota"]["version"], "6.7")
+        from verify_apatch_custota import CUSTOTA_SHA
+        self.assertEqual(manifest["profile"]["custota"]["module_sha256"], CUSTOTA_SHA)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

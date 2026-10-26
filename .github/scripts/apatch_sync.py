@@ -41,7 +41,7 @@ def get_release(tag):
 def source_ids():
     root = Path(os.environ["GITHUB_WORKSPACE"]) / "ota"
     result = {}
-    for name in LEGACY_IDS:
+    for name in (*LEGACY_IDS, ".github/scripts/verify_apatch_custota.py"):
         data = (root / name).read_bytes()
         result[name] = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
     return result
@@ -65,7 +65,8 @@ def expectation(version, resolved):
     if not re.fullmatch(r"\d{10}", version):
         raise RuntimeError("Invalid shared GrapheneOS version")
     profile = {"builder": BUILDER, "kernelpatch": KP, "selinux": SELINUX,
-               "source_ids": source_ids(), "tcp": "stock-bbrv1-fq", "schema": 1}
+               "source_ids": source_ids(), "tcp": "stock-bbrv1-fq", "schema": 1,
+               "custota": {"version": "6.7", "module_sha256": "e5a1480b53bfedc20e702541573683d6a68dacb7804792621dd7248c37ad97b6"}}}
     inputs = {"grapheneos": version, "apatch": resolved["version"],
               "manager_sha256": resolved["manager_sha256"], "profile": profile}
     fingerprint = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
@@ -138,6 +139,8 @@ def build_apatch(version, resolved, expected):
     if (private["grapheneos"] != version or private["apatch"] != resolved["version"] or
         private["manager_sha256"] != resolved["manager_sha256"]):
         raise RuntimeError("APatch build did not use the resolved inputs")
+    if private.get("custota", {}).get("verified") is not True:
+        raise RuntimeError("Custota system integration was not verified")
     path = builder / "dist" / f"blazer-{version}-apatch-private-test.zip"
     verify_zip(path, version)
     with path.open("rb") as stream:
@@ -156,6 +159,8 @@ def notes(manifest, resolved):
         f"Experimental APatch OTA for **Pixel 10 Pro (blazer)**, GrapheneOS **{version}**.\n\n"
         f"- APatch manager **{manifest['apatch']}**; KernelPatch **0.13.9**, pinned source {KP}.\n"
         "- Embedded **SELinux Magisk Access Filter 1.1.7**.\n"
+        "- Includes **Custota 6.7** as a privileged system app with both SELinux policy copies patched.\n"
+        "- Custota OTA server: **https://artemis311.github.io/ota/apatch/**.\n"
         "- Automatically selects the existing **BBRv1 + fq** at each boot; stock TCP code and drivers retained.\n\n"
         "Requires this repository's matching AVB/OTA signing keys. Do not downgrade a newer OS. "
         "CI verifies OTA/AVB signatures and the exact KPM set; hardware validation is not claimed.\n\n"
@@ -203,7 +208,7 @@ def stage_apatch(version, publish):
         release = api("POST", f"repos/{REPO}/releases", {
             "tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
             "draft": True, "prerelease": True, "make_latest": "false",
-            "name": f"Blazer | GrapheneOS {version} | APatch {resolved['version']} + BBRv1",
+            "name": f"Blazer | GrapheneOS {version} | APatch {resolved['version']} + BBRv1 + Custota",
             "body": notes(manifest, resolved),
         })
     else:
