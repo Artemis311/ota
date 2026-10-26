@@ -59,7 +59,7 @@ def main():
     if not re.fullmatch(r"[0-9a-f]{40}", pin):
         raise RuntimeError("Invalid Pixel source commit")
     checkout(PIXEL_URL, pin, root)
-    run("git", "-C", str(root), "submodule", "update", "--init", "--recursive", "--jobs", "2")
+    run("git", "-C", str(root), "submodule", "update", "--init", "--recursive", "--depth", "1", "--jobs", "2")
     common = root / "common"
     if sha(common / "net/ipv4/tcp_bbr.c") != STOCK_BBR_SHA:
         raise RuntimeError("Pixel common TCP source differs from the reviewed 6.6.144 base")
