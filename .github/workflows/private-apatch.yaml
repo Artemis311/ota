@@ -205,7 +205,7 @@ jobs:
           SUSFS test:
           1. Install this NEW test2 OTA; the old OTA lacks the signature adapter.
           2. Wait for snapshot merge to finish.
-          3. Install/update SUSFS-APatch-test2-v2.3.0-r18.4-blazer.zip in APatch AP modules,
+          3. Install/update SUSFS-APatch-test2.1-v2.3.0-r18.4-blazer.zip in APatch AP modules,
              NOT the KPM page. This replaces test1 using the same module ID.
           4. Reboot. One SUSFS load attempt runs after boot-completed.
           5. Tap Action: Download/susfs-apatch-test-log.txt contains BBR and SUSFS results.
