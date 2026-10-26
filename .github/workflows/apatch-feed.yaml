@@ -1,9 +1,6 @@
 name: Publish verified APatch Custota feed
 'on':
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [.github/workflows/apatch-feed.yaml]
 permissions:
   contents: read
 concurrency:
@@ -111,3 +108,16 @@ jobs:
         assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2])), 'Deployed feed does not match the published release'
         PY
         done
+        python3 - <<'PY'
+        import hashlib, json, os, subprocess
+        from pathlib import Path
+        record = json.loads(Path("ota-site/apatch/manifest.json").read_text())
+        name = record["signature"]
+        destination = Path(os.environ["RUNNER_TEMP"]) / "apatch-published.csig"
+        subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location",
+                        "--retry", "8", "--retry-all-errors", "--retry-delay", "5",
+                        os.environ["PAGE_URL"].rstrip("/") + "/apatch/" + name,
+                        "-o", str(destination)], check=True)
+        assert hashlib.sha256(destination.read_bytes()).hexdigest() == record["csig_sha256"], "Deployed APatch signature differs"
+        print("Verified public APatch signature and all three update feeds")
+        PY
