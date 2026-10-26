@@ -1,0 +1,49 @@
+name: Validate synchronized OTA pipeline
+'on':
+  push:
+    branches: [main, codex/synchronized-ota]
+    paths:
+      - .github/workflows/blazer-v31.yaml
+      - .github/workflows/ota-validation.yaml
+      - .github/scripts/apatch_pipeline.py
+      - .github/scripts/apatch_sync.py
+      - .github/scripts/prepare_stock_bbr.py
+      - .github/scripts/test_synchronized_ota.py
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ota
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: david568303/apatch-graphene
+          ref: c1d7484af159e573afddaf351b485f2e0995e530
+          path: apatch-builder
+          persist-credentials: false
+      - name: Validate source, synchronization failure paths and YAML
+        run: |
+          python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
+          python3 -m py_compile ota/.github/scripts/apatch_pipeline.py ota/.github/scripts/apatch_sync.py ota/.github/scripts/prepare_stock_bbr.py
+          python3 ota/.github/scripts/test_synchronized_ota.py
+          python3 ota/.github/scripts/apatch_pipeline.py prepare
+      - name: Check read-only release resolution and existing companion reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"]) / "ota/.github/scripts"))
+          import apatch_sync as ap
+          resolved = ap.resolve_apatch()
+          expected = ap.expectation("2026102101", resolved)
+          companion = ap.legacy_partner(expected)
+          print("Resolved official APatch:", resolved["version"])
+          print("Existing verified companion:", companion["release"]["html_url"] if companion else "new profile requires a build")
+          PY

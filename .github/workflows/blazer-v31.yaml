@@ -1,4 +1,4 @@
-name: Blazer - automatic GrapheneOS with newest pixincreate
+name: Blazer - synchronized pixincreate and APatch releases
 'on':
   workflow_dispatch:
     inputs:
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: write
       actions: read
@@ -41,18 +41,25 @@ jobs:
         path: builder
         fetch-depth: 1
         persist-credentials: false
+    - name: Check out inspected APatch build scripts
+      uses: actions/checkout@v4
+      with:
+        repository: david568303/apatch-graphene
+        ref: c1d7484af159e573afddaf351b485f2e0995e530
+        path: apatch-builder
+        persist-credentials: false
     - name: Check out this OTA repository
       uses: actions/checkout@v4
       with:
-        ref: main
+        ref: ${{ github.sha }}
         path: ota
         fetch-depth: 0
     - name: Install build prerequisites
       run: |
         sudo apt-get update
-        sudo apt-get install -y jq curl git unzip openssh-client python3 gh
+        sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils
         docker version
-    - name: Build, sign, and optionally publish
+    - name: Build both variants, verify both, then publish together
       id: build
       working-directory: builder
       shell: bash
@@ -67,6 +74,7 @@ jobs:
       run: |
         set -euo pipefail
         python3 - <<'PYTHON'
+        import sys
         import hashlib
         import json
         import os
@@ -78,6 +86,9 @@ jobs:
         import zipfile
         from datetime import datetime, timezone
         from pathlib import Path
+
+        sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"]) / "ota/.github/scripts"))
+        from apatch_sync import stage_apatch, publish_apatch, rollback_apatch
 
         REPO = os.environ.get('GITHUB_REPOSITORY', '')
         PIXIN = 'pixincreate/Magisk'
@@ -385,6 +396,12 @@ jobs:
                 raise RuntimeError('Invalid GrapheneOS version')
             print('GrapheneOS:', version, flush=True)
             publish = os.environ.get('PUBLISH') == 'true'
+            if publish:
+                newer = [r for r in pages(f'repos/{REPO}/releases')
+                         if not r['draft'] and re.match(r'^blazer-([0-9]{10})-', r['tag_name'])
+                         and re.match(r'^blazer-([0-9]{10})-', r['tag_name']).group(1) > version]
+                if newer:
+                    raise RuntimeError('Refusing to publish an older OS than an existing public release')
             # Resolve on EVERY run, including when this OS already has a published OTA.
             # Hash the actual verified APK: catches replaced assets under the same tag,
             # while avoiding duplicate OTAs when a CI APK is later released unchanged.
@@ -415,7 +432,8 @@ jobs:
                 if manifest is None:
                     manifest = build(version, selected_magisk)
                     if not publish:
-                        print('Test build only; nothing published.', flush=True)
+                        stage_apatch(version, False)
+                        print('Both test builds verified; nothing published.', flush=True)
                         return
                     if release is None:
                         notes = DIST / 'release-notes.txt'
@@ -429,7 +447,21 @@ jobs:
                     manifest = existing_manifest(release, version)
                     if manifest is None:
                         raise RuntimeError('Release upload verification failed; draft retained for retry')
-                gh('release', 'edit', tag, '--repo', REPO, '--draft=false')
+            # Both packages must be complete and use this exact OS version before publication.
+            partner = stage_apatch(version, True)
+            if partner['manifest']['grapheneos'] != manifest['grapheneos']:
+                raise RuntimeError('Companion OS version mismatch')
+            newly_published_magisk = bool(release['draft'])
+            try:
+                if newly_published_magisk:
+                    gh('release', 'edit', tag, '--repo', REPO, '--draft=false')
+                publish_apatch(partner)
+            except Exception:
+                # Never re-draft releases that were already public before this run.
+                if newly_published_magisk:
+                    gh('release', 'edit', tag, '--repo', REPO, '--draft=true')
+                rollback_apatch(partner)
+                raise
             sync_feed(manifest, tag)
 
 
@@ -449,7 +481,7 @@ jobs:
       if: always()
       shell: bash
       run: |
-        sudo rm -rf -- builder/.tmp
+        sudo rm -rf -- builder/.tmp apatch-builder/.tmp
   deploy-pages:
     needs: build
     if: needs.build.outputs.deploy == 'true'

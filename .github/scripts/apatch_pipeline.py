@@ -1,0 +1,158 @@
+"""Prepare a pinned APatch builder and store its output in a draft release only."""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import urllib.parse
+import sys
+from pathlib import Path
+
+BUILDER_COMMIT = "c1d7484af159e573afddaf351b485f2e0995e530"
+SCRIPT_BLOB = "997cbd963103403d7e3d30b2e19a26bdab8d39f1"
+KERNELPATCH_COMMIT = "280d32d967feb7ddc0fd1848aa1d1388807945d5"
+
+
+def run(*args, **kwargs):
+    return subprocess.run(args, check=True, **kwargs)
+
+
+def replace_once(text, old, new):
+    if text.count(old) != 1:
+        raise RuntimeError("Pinned builder differs from the inspected source")
+    return text.replace(old, new, 1)
+
+
+def prepare():
+    root = Path(os.environ["GITHUB_WORKSPACE"])
+    builder = root / "apatch-builder"
+    actual = run("git", "-C", str(builder), "rev-parse", "HEAD", capture_output=True, text=True).stdout.strip()
+    if actual != BUILDER_COMMIT:
+        raise RuntimeError("Unexpected builder checkout")
+    source = builder / "rooted-ota.sh"
+    blob = run("git", "-C", str(builder), "hash-object", str(source), capture_output=True, text=True).stdout.strip()
+    if blob != SCRIPT_BLOB:
+        raise RuntimeError("Unexpected builder script")
+    text = source.read_text(encoding="utf-8")
+    # Keep the patched output separate from the original downloaded OTA.
+    text = replace_once(text, "    POTENTIAL_ASSETS['apatch']=\"${DEVICE_ID}-ota_update-${OTA_VERSION}.zip\"", "    POTENTIAL_ASSETS['apatch']=\"${DEVICE_ID}-${OTA_VERSION}-apatch-private-patched.zip\"")
+    # A private test OTA must not redirect the system updater to public releases.
+    text = replace_once(text, "    buildUpdaterOverlay\n    registerPatchModule 'updater_overlay.py' 'UpdaterOverlayModule'\n", "")
+    text = replace_once(text, '        args+=("--module-updater-overlay" ".tmp/updater-overlay.apk")\n', "")
+    text = replace_once(text,
+        '  expected=("Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ"\n'
+        '    "Only in $dir/patched/product/fs_tree/overlay: UpdaterOverlay.apk")\n'
+        '  python3 -I updater-overlay/check_target.py "$dir/stock/system/fs_tree/system/priv-app/Updater/Updater.apk"\n'
+        '  cmp "$dir/patched/product/fs_tree/overlay/UpdaterOverlay.apk" .tmp/updater-overlay.apk\n',
+        '  expected=("Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ")\n')
+    # Allow the supported relative-base path only after its symbol validation succeeds.
+    text = replace_once(text,
+        "      printRed 'Warning: KernelPatch could not resolve the arm64 relocation table and used its relative-base kallsyms path.'\n",
+        "      printRed 'KernelPatch used relative-base symbol lookup; checking its validation results.'\n      for required in \\\n        'try kallsyms_offsets first for 64-bit relative-base kernel' \\\n        'kallsyms_offsets offset: 0x' \\\n        'pid_vnr verfied sp_el0' \\\n        'memblock_phys_alloc_try_nid: type: t, offset: 0x' \\\n        'patch done: kernel'; do\n        if ! grep -Fq \"$required\" kptools-patch.log; then\n          printRed \"Relative-base validation is incomplete: $required\"\n          exit 1\n        fi\n      done\n      if grep -Eq 'pid_vnr verification failed|resolved symbol table only covers|can.t find kallsyms_num_syms|mismatch relo applied' kptools-patch.log; then\n        printRed 'KernelPatch symbol validation reported an inconsistency.'\n        exit 1\n      fi\n")
+    # Embed and verify only the pinned SELinux filter.
+    text = replace_once(text, "    ./kptools -p -i kernel.ori -k kpimg -o kernel 2>&1 | tee kptools-patch.log", "    ./kptools -p -i kernel.ori -k kpimg -o kernel \\\n      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n      2>&1 | tee kptools-patch.log\n    verifyPrivateKpms kernel")
+    text = replace_once(text, "  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"", "  preparePrivateKpms\n  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"")
+    text = replace_once(text, "    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then", "    verifyPrivateKpms kernel\n    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then")
+    text += "\nfunction preparePrivateKpms() {\n  local dir=\"$PWD/.tmp/private-kpms\"\n  mkdir -p \"$dir\"\n  export PRIVATE_KPM_DIR=\"$dir\"\n  local repo=\"$dir/selinux-source\"\n  git init \"$repo\"\n  git -C \"$repo\" remote add origin https://github.com/Admirepowered/selinux_hook.git\n  git -C \"$repo\" fetch --depth 1 origin 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  git -C \"$repo\" checkout --detach FETCH_HEAD\n  test \"$(git -C \"$repo\" rev-parse HEAD)\" = 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  make -C \"$repo/selinux_hook\" KP_DIR=\"$PWD/$KERNELPATCH_SOURCE_DIR\" TARGET_COMPILE=\"$KERNELPATCH_COMPILE_PREFIX\"\n  cp \"$repo/selinux_hook/selinux_hook_1.1.7.kpm\" \"$dir/selinux_hook.kpm\"\n  git -C \"$repo\" archive HEAD | gzip > \"$dir/selinux_hook-source.tar.gz\"\n  for file in selinux_hook; do\n    test -s \"$dir/$file.kpm\"\n    .tmp/kptools-linux -l -M \"$dir/$file.kpm\" > \"$dir/$file.metadata.txt\"\n    grep -q 'name=' \"$dir/$file.metadata.txt\"\n  done\n  (cd \"$dir\" && sha256sum ./*.kpm > KPM-SHA256SUMS)\n}\n\n\nfunction verifyPrivateKpms() {\n  local kernel=\"$1\"\n  ./kptools -i \"$kernel\" -l > embedded-kpms.txt\n  python3 - embedded-kpms.txt <<'PY_KPM_VERIFY'\nimport re, sys\nfrom pathlib import Path\ntext = Path(sys.argv[1]).read_text()\nentries = re.findall(r\"(?m)^name=([^\\r\\n]+)\\r?\\nevent=([^\\r\\n]+)\\r?$\", text)\nexpected = [(\"selinux_magisk_access_filter\", \"pre-kernel-init\")]\nif entries != expected:\n    raise SystemExit(\"Unexpected embedded KPM set or boot event: \" + repr(entries))\nprint(\"Verified exact embedded KPM set: SELinux filter only.\")\nPY_KPM_VERIFY\n}\n"
+    # Retain the stock TCP implementation and select its built-in BBRv1 on boot.
+    text = replace_once(text, "    mv kernel kernel.ori\n", "    mv kernel kernel.ori\n    python3 \"$GITHUB_WORKSPACE/ota/.github/scripts/prepare_stock_bbr.py\" kernel.ori ./kptools ../private-bbr\n")
+    text = replace_once(text, "    patchAPatchBootImage\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"", "    patchAPatchBootImage\n    registerPatchModule 'private_bbr.py' 'PrivateBbrModule'\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"")
+    text = replace_once(text, "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")", "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")\n        args+=(\"--module-private-bbr\" \".tmp/private-bbr\")")
+    text = replace_once(text, "  expected=(\"Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ\")\n", "  expected=(\"Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ\"\n    \"Only in $dir/patched/system/fs_tree/system/etc/init: private_bbr.rc\"\n    \"Only in $dir/patched/system/fs_tree/system/etc: private-bbr.json\")\n  cmp \"$dir/patched/system/fs_tree/system/etc/init/private_bbr.rc\" .tmp/private-bbr/private_bbr.rc\n  cmp \"$dir/patched/system/fs_tree/system/etc/private-bbr.json\" .tmp/private-bbr/BBR-PROFILE.json\n")
+    # Read authenticated public metadata without exposing a token to the signing step.
+    text += "\nfunction githubApiGet() {\n  case \"$1\" in\n    https://api.github.com/repos/bmax121/APatch/releases/tags/\"$APATCH_VERSION\")\n      cat \"$GITHUB_WORKSPACE/apatch-builder/release-metadata/apatch.json\" ;;\n    https://api.github.com/repos/bmax121/KernelPatch/releases/tags/0.13.9)\n      cat \"$GITHUB_WORKSPACE/apatch-builder/release-metadata/kernelpatch.json\" ;;\n    *) printf 'Unexpected release metadata request: %s\\n' \"$1\" >&2; return 1 ;;\n  esac\n}\n"
+    text = text.replace("curl --fail -sL", "curl --fail --show-error --retry 3 --retry-all-errors -sL")
+    (builder / "patch-modules/private_bbr.py").write_text((root / "ota/.github/scripts/private_bbr_module.py").read_text(), encoding="utf-8")
+    (builder / "rooted-ota.private.sh").write_text(text, encoding="utf-8", newline="\n")
+    (builder / "run-private.sh").write_text(BUILD_SH, encoding="utf-8", newline="\n")
+    run("bash", "-n", str(builder / "rooted-ota.private.sh"))
+    run("bash", "-n", str(builder / "run-private.sh"))
+
+
+BUILD_SH = r'''#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+for name in KEY_AVB_BASE64 KEY_OTA_BASE64 CERT_OTA_BASE64 PASSPHRASE_AVB PASSPHRASE_OTA; do
+  if [[ -z "${!name:-}" ]]; then
+    printf 'Missing repository secret: %s\n' "$name" >&2
+    exit 1
+  fi
+done
+[[ "$OTA_VERSION" == latest || "$OTA_VERSION" =~ ^[0-9]{10}$ ]] || exit 1
+unset GITHUB_TOKEN GH_TOKEN MAGISK_DOWNLOAD_TOKEN
+export DEVICE_ID=blazer
+export SKIP_ROOTLESS=true SKIP_APATCH=false SKIP_MODULES=true SKIP_CLEANUP=true
+export APATCH_PREINSTALL_MANAGER=false ALLOW_UNVERIFIED_APATCH=false DEBUG=''
+export GITHUB_REPO='' FORCE_BUILD=true
+export APATCH_VERSION="${APATCH_VERSION:?Resolved official APatch version required}" KERNELPATCH_VERSION=0.13.9
+export KERNELPATCH_COMMIT=280d32d967feb7ddc0fd1848aa1d1388807945d5
+source rooted-ota.private.sh
+createRootedOta
+mkdir -p dist
+# Verify that CI is still signing for the AVB key already published by this fork.
+openssl pkey -in "$KEY_AVB" -passin env:PASSPHRASE_AVB -pubout -out .tmp/avb-public.pem
+.tmp/avbroot key encode-avb --public-key .tmp/avb-public.pem -o dist/avb_pkmd.bin
+cmp dist/avb_pkmd.bin ../ota/avb_pkmd.bin
+# The OTA certificate must match the supplied OTA private key.
+openssl pkey -in "$KEY_OTA" -passin env:PASSPHRASE_OTA -pubout -out .tmp/ota-public.pem
+openssl x509 -in "$CERT_OTA" -pubkey -noout > .tmp/cert-public.pem
+cmp .tmp/ota-public.pem .tmp/cert-public.pem
+for flavor in apatch; do
+  asset="${POTENTIAL_ASSETS[$flavor]}"
+  target="blazer-${OTA_VERSION}-${flavor}-private-test.zip"
+  .tmp/avbroot ota verify --input ".tmp/$asset" --cert-ota "$CERT_OTA" --public-key-avb dist/avb_pkmd.bin
+  cp -- ".tmp/$asset" "dist/$target"
+done
+cp -- "$CERT_OTA" dist/ota.crt
+cp .tmp/private-kpms/*.kpm .tmp/private-kpms/*.metadata.txt .tmp/private-kpms/KPM-SHA256SUMS dist/
+cp ".tmp/apatch-${DEVICE_ID}-${OTA_VERSION}/embedded-kpms.txt" dist/KPM-EMBEDDED.txt
+cp .tmp/private-kpms/selinux_hook-source.tar.gz dist/
+cp .tmp/private-bbr/BBR-PROFILE.json .tmp/private-bbr/private_bbr.rc .tmp/private-bbr/tcp_bbr-source.c dist/
+export BUILD_OTA_VERSION="$OTA_VERSION" BUILD_APATCH_VERSION="$APATCH_VERSION"
+export BUILD_MANAGER_URL="$APATCH_MANAGER_URL" BUILD_MANAGER_SHA256="$APATCH_MANAGER_SHA256"
+python3 ../ota/.github/scripts/apatch_pipeline.py manifest
+'''
+
+
+INSTALL_NOTES = """APatch OTA for blazer, with the SELinux filter and automatic stock BBRv1 + fq.
+The actual OTA kernel is inspected before applying the profile.
+Requires this repository\'s matching AVB/OTA keys; hardware validation is not claimed.
+"""
+
+
+def digest(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def manifest():
+    dist = Path("dist")
+    version = os.environ["BUILD_OTA_VERSION"]
+    if not re.fullmatch(r"[0-9]{10}", version):
+        raise RuntimeError("Invalid resolved OS version")
+    (dist / "READ-ME-FIRST.txt").write_text(INSTALL_NOTES)
+    data = {
+        "device": "blazer", "grapheneos": version,
+        "hardware_tested": False, "builder_commit": BUILDER_COMMIT,
+        "kpm_profile": "selinux-filter-only-no-susfs",
+        "bbr_profile": json.loads((dist / "BBR-PROFILE.json").read_text()),
+        "kpm_sources": {
+            "selinux_hook": "Admirepowered/selinux_hook@8ad91d00b9abd0fb3191d968b74fdc502126f8ca"
+        },
+        "kernelpatch_commit": KERNELPATCH_COMMIT,
+        "apatch": os.environ["BUILD_APATCH_VERSION"],
+        "manager_url": os.environ["BUILD_MANAGER_URL"],
+        "manager_sha256": os.environ["BUILD_MANAGER_SHA256"],
+        "repository_commit": os.environ["GITHUB_SHA"],
+        "files": {p.name: {"size": p.stat().st_size, "sha256": digest(p)}
+                  for p in sorted(dist.iterdir()) if p.is_file()},
+    }
+    (dist / "BUILD_MANIFEST.json").write_text(json.dumps(data, indent=2) + "\n")
+    (dist / "SHA256SUMS").write_text("".join(
+        f"{digest(p)}  {p.name}\n" for p in sorted(dist.iterdir())
+        if p.is_file() and p.name != "SHA256SUMS"))
+
+
+
+if __name__ == "__main__":
+    {"prepare": prepare, "manifest": manifest}[sys.argv[1]]()
