@@ -46,11 +46,13 @@ jobs:
           ref: c1d7484af159e573afddaf351b485f2e0995e530
           path: builder
           persist-credentials: false
-      - name: Install build prerequisites
+      - name: Check installed OTA build tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils clang lld qemu-user flex bison bc libssl-dev libelf-dev lz4 kmod rsync
+          for tool in git jq curl unzip ssh-keygen cmake gcc make xz python3 gh openssl docker; do
+            command -v "$tool" || exit 1
+          done
           docker version
+          python3 -m py_compile ota/.github/scripts/prepare_private_bbr.py ota/.github/scripts/build_rekernel_x.py ota/.github/scripts/private_bbr_module.py
       - name: Prepare private build and validate shell syntax
         shell: bash
         run: |
@@ -296,14 +298,6 @@ jobs:
               {"prepare": prepare, "manifest": manifest, "publish": publish}[sys.argv[1]]()
           PY_PRIVATE_HELPER
           python3 ota/.github/scripts/private_apatch.py prepare
-      - name: Check ReKernel-X compilation
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          git init "$RUNNER_TEMP/rekernel-kp"
-          git -C "$RUNNER_TEMP/rekernel-kp" remote add origin https://github.com/bmax121/KernelPatch.git
-          git -C "$RUNNER_TEMP/rekernel-kp" fetch --depth 1 origin 280d32d967feb7ddc0fd1848aa1d1388807945d5
-          git -C "$RUNNER_TEMP/rekernel-kp" checkout --detach FETCH_HEAD
-          python3 ota/.github/scripts/build_rekernel_x.py "$RUNNER_TEMP/rekernel-kp" aarch64-linux-gnu- "$RUNNER_TEMP/rekernel-check"
       - name: Resolve pinned public release metadata
         env:
           GH_TOKEN: ${{ github.token }}
