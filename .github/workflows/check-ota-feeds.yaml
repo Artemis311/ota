@@ -3,7 +3,7 @@ name: Check published Custota feeds
   workflow_dispatch:
   workflow_run:
     workflows:
-      - Publish verified APatch Custota feed
+      - Build APatch OTA with integrated Custota
       - Blazer - synchronized pixincreate and APatch releases
     types: [completed]
 permissions:
