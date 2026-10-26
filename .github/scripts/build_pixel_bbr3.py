@@ -18,6 +18,8 @@ PATCH_PATH = "common/bbrv3/0001-net-tcp-backport-BBRv3-to-android15-6.6.patch"
 STOCK_COMMIT = "2069f4e6645302bf3504b81a77c72545b04912f5"
 STOCK_BBR_SHA = "ba7d0706259dfef5bf455f26ac4bab65f43b9209b9cfd4f761c64c89816bdfe4"
 PIXEL_URL = "https://gitlab.com/grapheneos/kernel_pixel_6.6.git"
+PIXEL_COMMIT = "8880355265bbfa4180c80252a22c81f9ad5a726c"
+ACK_COMMIT = "92137a1ac9ec89ead97b5695114ed250c03f3f48"
 EXPECTED = {
     "include/linux/tcp.h", "include/net/tcp.h", "include/uapi/linux/inet_diag.h",
     "include/uapi/linux/rtnetlink.h", "net/ipv4/Kconfig", "net/ipv4/Makefile",
@@ -48,21 +50,18 @@ def main():
     dest.mkdir(parents=True, exist_ok=True)
     workspace = dest.parent
     root = workspace / "pixel-source"
-    # Resolve the official monolithic source once, then fetch only that immutable
-    # commit. The exact pin and all recursive submodule pins are retained below.
-    pin = os.environ.get("PIXEL_KERNEL_COMMIT", "").strip()
-    if not pin:
-        listing = run("git", "ls-remote", PIXEL_URL, "refs/heads/17",
-                      capture_output=True, text=True).stdout.split()
-        if len(listing) != 2:
-            raise RuntimeError("Cannot resolve official Pixel source")
-        pin = listing[0]
+    # The source checkout was inspected in the first CI attempt: Pixel's GKI
+    # lives in common/ack, pinned to the exact commit from the installed kernel.
+    pin = os.environ.get("PIXEL_KERNEL_COMMIT", "").strip() or PIXEL_COMMIT
     if not re.fullmatch(r"[0-9a-f]{40}", pin):
         raise RuntimeError("Invalid Pixel source commit")
     print("Resolved official Pixel source commit:", pin, flush=True)
     checkout(PIXEL_URL, pin, root)
     run("git", "-C", str(root), "submodule", "update", "--init", "--recursive", "--depth", "1", "--jobs", "2")
-    common = root / "common"
+    common = root / "common/ack"
+    actual_ack = run("git", "-C", str(common), "rev-parse", "HEAD", capture_output=True, text=True).stdout.strip()
+    if actual_ack != ACK_COMMIT:
+        raise RuntimeError("The Pixel ACK submodule differs from the exact tested kernel")
     if sha(common / "net/ipv4/tcp_bbr.c") != STOCK_BBR_SHA:
         raise RuntimeError("Pixel common TCP source differs from the reviewed 6.6.144 base")
     if not re.search(r"(?m)^SUBLEVEL = 144$", (common / "Makefile").read_text()):
@@ -126,6 +125,7 @@ def main():
                      capture_output=True, text=True).stdout
     report = {
         "pixel_source_url": PIXEL_URL, "pixel_source_commit": pin,
+        "ack_commit": actual_ack,
         "submodules": submodules.splitlines(),
         "stock_prebuilts_commit": STOCK_COMMIT, "stock_modules": stock_modules,
         "patch_source": PATCH_REPO, "patch_commit": PATCH_COMMIT,
