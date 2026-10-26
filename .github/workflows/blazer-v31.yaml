@@ -21,6 +21,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
+    if: github.repository == 'Artemis311/ota' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
@@ -469,7 +470,7 @@ jobs:
             main()
         PYTHON
     - name: Upload public build artifacts
-      if: always() && steps.build.outputs.built == 'true'
+      if: success() && steps.build.outputs.built == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.build.outputs.artifact_name }}

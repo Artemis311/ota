@@ -144,6 +144,54 @@ class CompanionChecks(unittest.TestCase):
             second = ap.expectation("2026102101", resolved)
         self.assertNotEqual(first["fingerprint"], second["fingerprint"])
 
+class WorkflowChecks(unittest.TestCase):
+    def test_failed_pair_cannot_publish_actions_artifacts(self):
+        document = yaml.safe_load((HERE.parent / "workflows/blazer-v31.yaml").read_text())
+        artifact = next(step for step in document["jobs"]["build"]["steps"]
+                        if step.get("uses", "").startswith("actions/upload-artifact@"))
+        self.assertIn("success()", artifact["if"])
+        self.assertNotIn("always()", artifact["if"])
+
+class DraftRecoveryChecks(unittest.TestCase):
+    def test_matching_incomplete_draft_is_rebuilt_without_duplicate_release(self):
+        expected = {"schema": 1, "device": "blazer", "grapheneos": "2026102201",
+                    "apatch": "11282", "fingerprint": "f" * 64}
+        manifest = {**expected, "files": {"blazer-2026102201-apatch.zip": {"sha256": "a" * 64, "size": 20}}}
+        draft = {"id": 5, "draft": True, "assets": [], "body": ap.MARKER + json.dumps(manifest) + "\n-->",
+                 "upload_url": "https://uploads.github.com/repos/Artemis311/ota/releases/5/assets{?name}"}
+        complete = {**draft, "assets": [{"name": "blazer-2026102201-apatch.zip", "size": 20,
+                    "state": "uploaded", "digest": "sha256:" + "a" * 64}]}
+        calls = []
+        def fake_api(method, endpoint, data=None):
+            calls.append(method)
+            return complete if method == "GET" else draft
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": ap.REPO, "GITHUB_TOKEN": "test", "GITHUB_SHA": "c" * 40}), \
+             patch.object(ap, "resolve_apatch", return_value={"version": "11282"}), \
+             patch.object(ap, "expectation", return_value=expected), \
+             patch.object(ap, "legacy_partner", return_value=None), \
+             patch.object(ap, "get_release", return_value=draft), \
+             patch.object(ap, "build_apatch", return_value=(Path("/tmp/blazer-2026102201-apatch.zip"), manifest)), \
+             patch.object(ap, "notes", return_value="updated"), \
+             patch.object(ap, "api", side_effect=fake_api), \
+             patch.object(ap.subprocess, "run"):
+            result = ap.stage_apatch("2026102201", True)
+        self.assertEqual(result["release"]["id"], 5)
+        self.assertIn("PATCH", calls)
+        self.assertNotIn("POST", calls)
+
+    def test_incomplete_public_release_is_never_rebuilt(self):
+        expected = {"grapheneos": "2026102201", "apatch": "11282", "fingerprint": "f"}
+        bad = {"id": 5, "draft": False, "assets": [], "body": ap.MARKER + json.dumps(expected) + "\n-->"}
+        with patch.dict(os.environ, {"GITHUB_REPOSITORY": ap.REPO}), \
+             patch.object(ap, "resolve_apatch", return_value={"version": "11282"}), \
+             patch.object(ap, "expectation", return_value=expected), \
+             patch.object(ap, "legacy_partner", return_value=None), \
+             patch.object(ap, "get_release", return_value=bad), \
+             patch.object(ap, "build_apatch") as build:
+            with self.assertRaises(RuntimeError):
+                ap.stage_apatch("2026102201", True)
+            build.assert_not_called()
+
 class KernelChecks(unittest.TestCase):
     def test_new_patchlevel_is_identified_from_real_banner(self):
         k, prefix = bbr.identify_kernel(b"\0Linux version 6.6.150-android15-8-gabcdef123456-4k (builder)\0")

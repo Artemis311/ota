@@ -183,17 +183,34 @@ def stage_apatch(version, publish):
     release = get_release(tag) if publish else None
     if release:
         manifest = manifest_from_body(release.get("body", ""))
-        validate_release(release, expected, manifest)
-        return {"release": release, "expected": expected, "manifest": manifest}
+        if not manifest or any(manifest.get(k) != v for k, v in expected.items()):
+            raise RuntimeError("Existing APatch release has different build inputs")
+        try:
+            validate_release(release, expected, manifest)
+        except RuntimeError:
+            if not release["draft"]:
+                raise
+            expected_name = f"blazer-{version}-apatch.zip"
+            if any(a["name"] != expected_name for a in release["assets"]):
+                raise RuntimeError("Draft contains unexpected attachments; refusing to remove them")
+            # Only an incomplete matching draft can be repaired; published firmware is immutable.
+        else:
+            return {"release": release, "expected": expected, "manifest": manifest}
     path, manifest = build_apatch(version, resolved, expected)
     if not publish:
         return {"release": None, "expected": expected, "manifest": manifest}
-    release = api("POST", f"repos/{REPO}/releases", {
-        "tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
-        "draft": True, "prerelease": True, "make_latest": "false",
-        "name": f"Blazer | GrapheneOS {version} | APatch {resolved['version']} + BBRv1",
-        "body": notes(manifest, resolved),
-    })
+    if release is None:
+        release = api("POST", f"repos/{REPO}/releases", {
+            "tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
+            "draft": True, "prerelease": True, "make_latest": "false",
+            "name": f"Blazer | GrapheneOS {version} | APatch {resolved['version']} + BBRv1",
+            "body": notes(manifest, resolved),
+        })
+    else:
+        for asset in release["assets"]:
+            api("DELETE", f"repos/{REPO}/releases/assets/{asset['id']}")
+        release = api("PATCH", f"repos/{REPO}/releases/{release['id']}",
+                      {"body": notes(manifest, resolved)})
     url = release["upload_url"].split("{", 1)[0]
     if not url.startswith(f"https://uploads.github.com/repos/{REPO}/releases/"):
         raise RuntimeError("Unexpected APatch upload destination")
