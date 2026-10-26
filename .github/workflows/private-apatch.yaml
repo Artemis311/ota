@@ -9,7 +9,7 @@ name: Blazer - private ReKernel-X and compiled BBRv3 (draft only)
         required: true
         default: '2026102101'
       pixel_kernel_commit:
-        description: 'Optional exact official GrapheneOS Pixel source commit; empty resolves branch 17 once and records the pin'
+        description: 'Optional exact official Pixel source commit; empty uses the confirmed pinned source'
         type: string
         required: false
         default: ''
@@ -184,6 +184,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/pixel-result/BBR3-BUILD.json" "$GITHUB_WORKSPACE/pixel-result/BBRv3-android15-6.6.patch" "$GITHUB_WORKSPACE/pixel-result/pixel-source.patch" "$GITHUB_WORKSPACE/pixel-result/pixel-kernel-source.tar.gz" "$GITHUB_WORKSPACE/pixel-result/installed-module-plan.json" dist/
           python3 ../ota/.github/scripts/verify_pixel_module_ota.py "$PWD/.tmp" "$PWD/.tmp/$OTA_TARGET.zip" "$PWD/dist/blazer-${OTA_VERSION}-apatch-private-test.zip" "$GITHUB_WORKSPACE/pixel-result"
           cp "$GITHUB_WORKSPACE/pixel-result/FINAL-MODULE-VERIFICATION.json" dist/
+          cp "$GITHUB_WORKSPACE/pixel-result/BBRv3-private-oom.patch" dist/
           export BUILD_OTA_VERSION="$OTA_VERSION" BUILD_APATCH_VERSION="$APATCH_VERSION"
           export BUILD_MANAGER_URL="$APATCH_MANAGER_URL" BUILD_MANAGER_SHA256="$APATCH_MANAGER_SHA256"
           python3 ../ota/.github/scripts/private_apatch.py manifest
