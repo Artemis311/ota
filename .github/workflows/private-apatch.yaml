@@ -1,4 +1,4 @@
-name: Blazer - private SUSFS test2 and automatic BBR (draft download only)
+name: Blazer - private ReKernel-X and compiled BBRv3 (draft only)
 
 'on':
   workflow_dispatch:
@@ -8,15 +8,21 @@ name: Blazer - private SUSFS test2 and automatic BBR (draft download only)
         type: string
         required: true
         default: '2026102101'
+      pixel_kernel_commit:
+        description: 'Optional exact official GrapheneOS Pixel source commit; empty resolves branch 17 once and records the pin'
+        type: string
+        required: false
+        default: ''
   push:
     branches: [main]
     paths:
       - .github/workflows/private-apatch.yaml
-      - .github/scripts/build_susfs_test.py
-      - .github/scripts/build_susfs_adapter.py
-      - .github/scripts/prepare_private_bbr.py
+      - .github/scripts/build_rekernel_x.py
+      - .github/scripts/build_pixel_bbr3.py
+      - .github/scripts/verify_pixel_bbr3.py
+      - .github/scripts/private_pixel_modules.py
+      - .github/scripts/verify_pixel_module_ota.py
       - .github/scripts/private_bbr_module.py
-      - .github/kpm/**
 
 permissions:
   contents: read
@@ -29,12 +35,13 @@ jobs:
   private-build:
     if: github.repository == 'Artemis311/ota' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 360
     permissions:
       contents: write
     env:
       OTA_VERSION: ${{ inputs.ota_version || '2026102101' }}
       GH_PROMPT_DISABLED: '1'
+      PIXEL_KERNEL_COMMIT: ${{ inputs.pixel_kernel_commit || '' }}
     steps:
       - name: Check out this repository
         uses: actions/checkout@v4
@@ -51,7 +58,7 @@ jobs:
       - name: Install build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils clang lld qemu-user
+          sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils clang lld qemu-user flex bison bc libssl-dev libelf-dev lz4 kmod rsync
           docker version
       - name: Prepare private build and validate shell syntax
         shell: bash
@@ -113,13 +120,19 @@ jobs:
               text = replace_once(text, "    ./kptools -p -i kernel.ori -k kpimg -o kernel 2>&1 | tee kptools-patch.log", "    ./kptools -p -i kernel.ori -k kpimg -o kernel \\\n      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n      2>&1 | tee kptools-patch.log\n    verifyPrivateKpms kernel")
               text = replace_once(text, "  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"", "  preparePrivateKpms\n  cp '.tmp/kptools-linux' \"$workDir/kptools\"\n  cp '.tmp/kpimg-android' \"$workDir/kpimg\"")
               text = replace_once(text, "    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then", "    verifyPrivateKpms kernel\n    if ! ./kptools -i kernel -l | grep -q 'patched=true'; then")
-              text += "\nfunction preparePrivateKpms() {\n  local dir=\"$PWD/.tmp/private-kpms\"\n  mkdir -p \"$dir\"\n  export PRIVATE_KPM_DIR=\"$dir\"\n  local repo=\"$dir/selinux-source\"\n  git init \"$repo\"\n  git -C \"$repo\" remote add origin https://github.com/Admirepowered/selinux_hook.git\n  git -C \"$repo\" fetch --depth 1 origin 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  git -C \"$repo\" checkout --detach FETCH_HEAD\n  test \"$(git -C \"$repo\" rev-parse HEAD)\" = 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  make -C \"$repo/selinux_hook\" KP_DIR=\"$PWD/$KERNELPATCH_SOURCE_DIR\" TARGET_COMPILE=\"$KERNELPATCH_COMPILE_PREFIX\"\n  cp \"$repo/selinux_hook/selinux_hook_1.1.7.kpm\" \"$dir/selinux_hook.kpm\"\n  python3 \"$GITHUB_WORKSPACE/ota/.github/scripts/build_susfs_adapter.py\" \"$PWD/$KERNELPATCH_SOURCE_DIR\" \"$KERNELPATCH_COMPILE_PREFIX\" \"$dir\"\n  for file in selinux_hook susfs_sig_allow; do\n    test -s \"$dir/$file.kpm\"\n    .tmp/kptools-linux -l -M \"$dir/$file.kpm\" > \"$dir/$file.metadata.txt\"\n    grep -q 'name=' \"$dir/$file.metadata.txt\"\n  done\n  (cd \"$dir\" && sha256sum ./*.kpm > KPM-SHA256SUMS)\n}\n\n\nfunction verifyPrivateKpms() {\n  local kernel=\"$1\"\n  ./kptools -i \"$kernel\" -l > embedded-kpms.txt\n  python3 - embedded-kpms.txt <<'PY_KPM_VERIFY'\nimport re, sys\nfrom pathlib import Path\ntext = Path(sys.argv[1]).read_text()\nentries = re.findall(r\"(?m)^name=([^\\r\\n]+)\\r?\\nevent=([^\\r\\n]+)\\r?$\", text)\nexpected = [(\"selinux_magisk_access_filter\", \"pre-kernel-init\"), (\"susfs_sig_allow\", \"post-kernel-init\")]\nif entries != expected:\n    raise SystemExit(\"Unexpected embedded KPM set or boot event: \" + repr(entries))\nprint(\"Verified exact embedded KPM set: SELinux filter and scoped SUSFS adapter.\")\nPY_KPM_VERIFY\n}\n"
-              # Test2: scope the signature exception and set BBR through signed init actions.
-              text = replace_once(text, "      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n", "      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n      -M \"$PRIVATE_KPM_DIR/susfs_sig_allow.kpm\" -T kpm -V post-kernel-init \\\n")
-              text = replace_once(text, "    mv kernel kernel.ori\n", "    mv kernel kernel.ori\n    python3 \"$GITHUB_WORKSPACE/ota/.github/scripts/prepare_private_bbr.py\" kernel.ori ./kptools \"$PRIVATE_KPM_DIR/../private-bbr\"\n")
+              text += "\nfunction preparePrivateKpms() {\n  local dir=\"$PWD/.tmp/private-kpms\"\n  mkdir -p \"$dir\"\n  export PRIVATE_KPM_DIR=\"$dir\"\n  local repo=\"$dir/selinux-source\"\n  git init \"$repo\"\n  git -C \"$repo\" remote add origin https://github.com/Admirepowered/selinux_hook.git\n  git -C \"$repo\" fetch --depth 1 origin 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  git -C \"$repo\" checkout --detach FETCH_HEAD\n  test \"$(git -C \"$repo\" rev-parse HEAD)\" = 8ad91d00b9abd0fb3191d968b74fdc502126f8ca\n  make -C \"$repo/selinux_hook\" KP_DIR=\"$PWD/$KERNELPATCH_SOURCE_DIR\" TARGET_COMPILE=\"$KERNELPATCH_COMPILE_PREFIX\"\n  cp \"$repo/selinux_hook/selinux_hook_1.1.7.kpm\" \"$dir/selinux_hook.kpm\"\n  python3 \"$GITHUB_WORKSPACE/ota/.github/scripts/build_rekernel_x.py\" \"$PWD/$KERNELPATCH_SOURCE_DIR\" \"$KERNELPATCH_COMPILE_PREFIX\" \"$dir\"\n  for file in selinux_hook re_kernel_x; do\n    test -s \"$dir/$file.kpm\"\n    .tmp/kptools-linux -l -M \"$dir/$file.kpm\" > \"$dir/$file.metadata.txt\"\n    grep -q 'name=' \"$dir/$file.metadata.txt\"\n  done\n  (cd \"$dir\" && sha256sum ./*.kpm > KPM-SHA256SUMS)\n}\n\n\nfunction verifyPrivateKpms() {\n  local kernel=\"$1\"\n  ./kptools -i \"$kernel\" -l > embedded-kpms.txt\n  python3 - embedded-kpms.txt <<'PY_KPM_VERIFY'\nimport re, sys\nfrom pathlib import Path\ntext = Path(sys.argv[1]).read_text()\nentries = re.findall(r\"(?m)^name=([^\\r\\n]+)\\r?\\nevent=([^\\r\\n]+)\\r?$\", text)\nexpected = [(\"selinux_magisk_access_filter\", \"pre-kernel-init\"), (\"re_kernel_x\", \"post-kernel-init\")]\nif entries != expected:\n    raise SystemExit(\"Unexpected embedded KPM set or boot event: \" + repr(entries))\nprint(\"Verified exact embedded KPM set: SELinux filter and ReKernel-X.\")\nPY_KPM_VERIFY\n}\n"
+              # ReKernel-X plus a complete rebuilt BBRv3 kernel/module set.
+              text = replace_once(text, "      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n", "      -M \"$PRIVATE_KPM_DIR/selinux_hook.kpm\" -T kpm -V pre-kernel-init \\\n      -M \"$PRIVATE_KPM_DIR/re_kernel_x.kpm\" -T kpm -V post-kernel-init \\\n")
+              text = replace_once(text, "    mv kernel kernel.ori\n", "    mv kernel kernel.ori\n    python3 \"$GITHUB_WORKSPACE/ota/.github/scripts/verify_pixel_bbr3.py\" kernel.ori ./kptools \"$GITHUB_WORKSPACE/pixel-result\" kernel.ori\n")
               text = replace_once(text, "    patchAPatchBootImage\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"", "    patchAPatchBootImage\n    registerPatchModule 'private_bbr.py' 'PrivateBbrModule'\n    if [[ \"$APATCH_PREINSTALL_MANAGER\"")
               text = replace_once(text, "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")", "        args+=(\"--patch-arg=--prepatched\" \"--patch-arg\" \"$APATCH_BOOT_IMAGE\")\n        args+=(\"--module-private-bbr\" \".tmp/private-bbr\")")
               text = replace_once(text, "  expected=(\"Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ\")\n", "  expected=(\"Files $dir/stock/system/fs_tree/system/etc/security/otacerts.zip and $dir/patched/system/fs_tree/system/etc/security/otacerts.zip differ\"\n    \"Only in $dir/patched/system/fs_tree/system/etc/init: private_bbr.rc\"\n    \"Only in $dir/patched/system/fs_tree/system/etc: private-bbr.json\")\n  cmp \"$dir/patched/system/fs_tree/system/etc/init/private_bbr.rc\" .tmp/private-bbr/private_bbr.rc\n  cmp \"$dir/patched/system/fs_tree/system/etc/private-bbr.json\" .tmp/private-bbr/BBR-PROFILE.json\n")
+              # Replace all matching stock drivers with modules signed for this rebuilt kernel.
+              text = replace_once(text, "    registerPatchModule 'private_bbr.py' 'PrivateBbrModule'\n",
+                  "    registerPatchModule 'private_bbr.py' 'PrivateBbrModule'\n    registerPatchModule 'private_pixel_modules.py' 'PrivatePixelModules'\n")
+              text = replace_once(text, '        args+=("--module-private-bbr" ".tmp/private-bbr")\n',
+                  '        args+=("--module-private-bbr" ".tmp/private-bbr")\n        args+=("--module-private-pixel-modules" "$GITHUB_WORKSPACE/pixel-result")\n')
+              (builder / "patch-modules/private_pixel_modules.py").write_text((root / "ota/.github/scripts/private_pixel_modules.py").read_text(), encoding="utf-8")
               (builder / "patch-modules/private_bbr.py").write_text((root / "ota/.github/scripts/private_bbr_module.py").read_text(), encoding="utf-8")
               (builder / "rooted-ota.private.sh").write_text(text, encoding="utf-8", newline="\n")
               (builder / "run-private.sh").write_text(BUILD_SH, encoding="utf-8", newline="\n")
@@ -168,55 +181,49 @@ jobs:
           cp ".tmp/apatch-${DEVICE_ID}-${OTA_VERSION}/embedded-kpms.txt" dist/KPM-EMBEDDED.txt
           cp .tmp/private-kpms/*.build.json .tmp/private-kpms/*-source.tar.gz dist/
           cp .tmp/private-bbr/BBR-PROFILE.json .tmp/private-bbr/private_bbr.rc .tmp/private-bbr/tcp_bbr-source.c dist/
+          cp "$GITHUB_WORKSPACE/pixel-result/BBR3-BUILD.json" "$GITHUB_WORKSPACE/pixel-result/BBRv3-android15-6.6.patch" "$GITHUB_WORKSPACE/pixel-result/pixel-source.patch" "$GITHUB_WORKSPACE/pixel-result/pixel-kernel-source.tar.gz" "$GITHUB_WORKSPACE/pixel-result/installed-module-plan.json" dist/
+          python3 ../ota/.github/scripts/verify_pixel_module_ota.py "$PWD/.tmp" "$PWD/.tmp/$OTA_TARGET.zip" "$PWD/dist/blazer-${OTA_VERSION}-apatch-private-test.zip" "$GITHUB_WORKSPACE/pixel-result"
+          cp "$GITHUB_WORKSPACE/pixel-result/FINAL-MODULE-VERIFICATION.json" dist/
           export BUILD_OTA_VERSION="$OTA_VERSION" BUILD_APATCH_VERSION="$APATCH_VERSION"
           export BUILD_MANAGER_URL="$APATCH_MANAGER_URL" BUILD_MANAGER_SHA256="$APATCH_MANAGER_SHA256"
           python3 ../ota/.github/scripts/private_apatch.py manifest
           '''
           
           
-          INSTALL_NOTES = """Private APatch test2 OTA for Pixel 10 Pro (blazer), not hardware-tested.
+          INSTALL_NOTES = """PRIVATE experimental ReKernel-X + real compiled BBRv3 for blazer.
           
-          This test requires the exact 2026102101 kernel verified from the previous log.
-          Use only blazer with the existing repository AVB/OTA keys; never downgrade.
-          Use standard recovery adb sideload for an existing setup with these same keys.
-          Do not use APatch direct install/update/restore on a locked bootloader.
-          The rootless OTA contains no KPMs or BBR startup actions and cannot guarantee
-          recovery during a virtual A/B snapshot merge. Data modules survive OTA updates.
-          No Custota module or public updater-feed overlay is installed.
+          This is a new kernel build, not merely a sysctl change. Hardware untested.
+          Requires the exact GrapheneOS 2026102101 base; never downgrade a newer OS.
+          Install only on blazer using this repository's existing OTA/AVB keys.
+          The APatch OTA contains the new kernel and rebuilt, signature-verified
+          vendor_kernel_boot/system_dlkm/vendor_dlkm modules as a matched set.
+          Never flash its boot image alone over old drivers.
+          Signature enforcement, hardening and stock config are checked before packing.
           
-          Embedded KPMs:
-          - SELinux Magisk Access Filter 1.1.7, pre-kernel-init, pinned upstream source.
-          - susfs_sig_allow 0.1.0, post-kernel-init, private exact-payload signature adapter.
-          NoHello, ReKernel and demo-hello are removed. Do not load these KPMs twice.
-          The adapter accepts only the tested kernel and normalized SHA-256 fingerprint
-          of one SUSFS .ko. Global signature enforcement stays active for other images.
-          The original rejection message may precede the adapter acceptance message.
-          Source and host security-test results accompany this release.
-          Do not hot-unload the embedded adapter or LKM.
+          Embedded KPMs (exact set):
+          - SELinux Magisk Access Filter 1.1.7, pre-kernel-init.
+          - ReKernel-X 1.6-20261010 dynamic build, post-kernel-init.
+          SUSFS, its signature adapter, NoHello and demo-hello are absent.
+          Before updating, UNINSTALL the old susfs_apatch_test AP module and reboot.
+          Data AP modules survive an OTA; do not leave an old SUSFS loader enabled.
+          Do not load another ReKernel/ReKernel-X copy or hot-unload embedded KPMs.
           
-          BBR is configured INSIDE the signed OTA:
-          - The actual boot kernel config and exact source commit are inspected.
-          - BBRv1 is the highest generation present; no BBRv2/v3 code is added.
-          - /system/etc/init/private_bbr.rc selects bbr/fq at every boot.
-          - /system/etc/private-bbr.json records build evidence.
-          - Current interface qdiscs and application-specific TCP choices are not forced.
-          - Runtime success needs phone verification via the companion module Action log.
+          ReKernel-X is event support for a compatible freezer controller.
+          It is not root hiding and does not select or freeze apps by itself.
+          This OTA does not install or configure a freezer controller.
           
-          SUSFS test:
-          1. Install this NEW test2 OTA; the old OTA lacks the signature adapter.
-          2. Wait for snapshot merge to finish.
-          3. Install/update SUSFS-APatch-test2.1-v2.3.0-r18.4-blazer.zip in APatch AP modules,
-             NOT the KPM page. This replaces test1 using the same module ID.
-          4. Reboot. One SUSFS load attempt runs after boot-completed.
-          5. Tap Action: Download/susfs-apatch-test-log.txt contains BBR and SUSFS results.
-          Loader static-PIE relocation and error handling are smoke-tested under QEMU.
-          Overcoming signatures does NOT prove LKM ABI/CFI/hook compatibility.
-          Failed/interrupted SUSFS attempts stay disarmed; BBR still applies every boot.
-          Read SUSFS-TEST-INSTRUCTIONS.txt for rearming and removal details.
-          This build does not fix the separately observed apd/Vector compatibility issues.
-          Disable/remove the SUSFS AP module and reboot to stop runtime loading.
-          Removing the embedded adapter or OTA BBR settings needs a newly signed OTA.
-          Keep this release a DRAFT. Verify SHA256SUMS before installation.
+          TCP default is compiled as bbr3 (the actual reviewed BBRv3 backport).
+          Init also selects bbr3 + fq on every boot. Existing socket choices,
+          QUIC/UDP congestion control and active interface qdiscs are not forced.
+          BBR-PROFILE.json and BBR3-BUILD.json contain implementation provenance.
+          No BBRv1 fallback is silently shipped as BBRv3.
+          
+          The rootless OTA retains the stock kernel/drivers and contains no KPMs
+          or custom BBR init actions. It is not a guaranteed rescue during a merge.
+          Wait for snapshot merge to complete before another update.
+          No Custota or public updater-feed overlay is installed.
+          This does not fix the separately observed apd/Vector issues.
+          Keep as DRAFT; verify SHA256SUMS; no phone validation is claimed.
           """
           
           
@@ -234,12 +241,12 @@ jobs:
               data = {
                   "device": "blazer", "grapheneos": version,
                   "hardware_tested": False, "builder_commit": BUILDER_COMMIT,
-                  "kpm_profile": "selinux-filter-plus-scoped-susfs-signature-adapter",
+                  "kpm_profile": "selinux-filter-plus-rekernel-x-no-susfs",
                   "bbr_profile": json.loads((dist / "BBR-PROFILE.json").read_text()),
-                  "susfs_companion": json.loads((dist / "SUSFS-PROVENANCE.json").read_text()),
+                  "rekernel_x": json.loads((dist / "re_kernel_x.build.json").read_text()),
                   "kpm_sources": {
                       "selinux_hook": "Admirepowered/selinux_hook@8ad91d00b9abd0fb3191d968b74fdc502126f8ca",
-                      "susfs_sig_allow": "local .github/kpm sources at repository_commit"
+                      "re_kernel_x": "lzghzr/APatch_kpm@6ef236d224217a298c112d198c0e0f84c004ea6c"
                   },
                   "kernelpatch_commit": KERNELPATCH_COMMIT,
                   "apatch": os.environ["BUILD_APATCH_VERSION"],
@@ -274,10 +281,10 @@ jobs:
                   f'Private APatch test for blazer, GrapheneOS {data["grapheneos"]}.\n\n'
                   'NOT hardware-tested on blazer. Read READ-ME-FIRST.txt before flashing.\n'
                   'Signed using the existing repository AVB/OTA keys; all OTA signatures verified.\n'
-                  'Test2 includes a scoped SUSFS signature KPM and automatic BBRv1/fq in the signed APatch OTA. Install the separate SUSFS test2 AP-module ZIP after installing this OTA. Rootless OTA has neither modification. Read SUSFS-TEST-INSTRUCTIONS.txt.\n\n'
+                  'Experimental rebuilt Pixel kernel with compiled/default BBRv3, ReKernel-X and SELinux filter. Matching rebuilt drivers are included. SUSFS and the signature adapter are removed. Uninstall the old SUSFS AP module first. Hardware test still required. Read READ-ME-FIRST.txt.\n\n'
                   '**Keep as draft: publishing would expose these downloads publicly.**\n')
               request = {"tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
-                         "draft": True, "name": f'PRIVATE APatch | SUSFS test2 + auto BBR | blazer {data["grapheneos"]} | {data["apatch"]}',
+                         "draft": True, "name": f'PRIVATE APatch | ReKernel-X + compiled BBRv3 | blazer {data["grapheneos"]} | {data["apatch"]}',
                          "body": notes.read_text()}
               release = json.loads(run("gh", "api", "--method", "POST", f"repos/{repo}/releases", "--input", "-",
                   input=json.dumps(request), capture_output=True, text=True).stdout)
@@ -309,9 +316,18 @@ jobs:
               {"prepare": prepare, "manifest": manifest, "publish": publish}[sys.argv[1]]()
           PY_PRIVATE_HELPER
           python3 ota/.github/scripts/private_apatch.py prepare
-      - name: Build and validate pinned SUSFS APatch test companion
-        working-directory: builder
-        run: python3 ../ota/.github/scripts/build_susfs_test.py dist
+      - name: Check ReKernel-X compilation before the expensive kernel build
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          git init "$RUNNER_TEMP/rekernel-kp"
+          git -C "$RUNNER_TEMP/rekernel-kp" remote add origin https://github.com/bmax121/KernelPatch.git
+          git -C "$RUNNER_TEMP/rekernel-kp" fetch --depth 1 origin 280d32d967feb7ddc0fd1848aa1d1388807945d5
+          git -C "$RUNNER_TEMP/rekernel-kp" checkout --detach FETCH_HEAD
+          python3 ota/.github/scripts/build_rekernel_x.py "$RUNNER_TEMP/rekernel-kp" aarch64-linux-gnu- "$RUNNER_TEMP/rekernel-check"
+      - name: Build real Pixel BBRv3 kernel and complete signed module set
+        run: |
+          python3 -m py_compile ota/.github/scripts/build_pixel_bbr3.py ota/.github/scripts/verify_pixel_bbr3.py ota/.github/scripts/build_rekernel_x.py ota/.github/scripts/verify_pixel_module_ota.py ota/.github/scripts/private_pixel_modules.py
+          python3 ota/.github/scripts/build_pixel_bbr3.py "$GITHUB_WORKSPACE/pixel-result"
       - name: Build and verify APatch and rootless OTAs
         working-directory: builder
         shell: bash
