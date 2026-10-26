@@ -1,5 +1,5 @@
 name: Build APatch OTA with integrated Custota
-# Verify the intended OTA trust certificate replacement in Android and recovery.
+# Validate Android and recovery policies independently against their stock originals.
 'on':
   workflow_dispatch:
   push:
