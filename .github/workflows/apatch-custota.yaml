@@ -61,7 +61,7 @@ jobs:
         from pathlib import Path
         root = Path(os.environ["GITHUB_WORKSPACE"])
         sys.path.insert(0, str(root / "ota/.github/scripts"))
-        from apatch_sync import stage_apatch, publish_apatch, api
+        from apatch_sync import stage_apatch, publish_apatch, api, resolve_apatch, expectation, get_release, MARKER
         from apatch_feed import prepare_feed, write_feed
         version = "2026102101"
         subprocess.run(["git", "-C", str(root / "ota"), "fetch", "origin", "gh-pages:refs/remotes/origin/gh-pages"], check=True)
@@ -75,6 +75,15 @@ jobs:
             match = re.match(r"^blazer-([0-9]{10})-", release["tag_name"])
             if not release["draft"] and match and match.group(1) > version:
                 raise RuntimeError("Refusing an older OS than an existing public OTA")
+        resolved = resolve_apatch()
+        expected = expectation(version, resolved)
+        tag = f"blazer-{version}-apatch-{resolved['version']}-{expected['fingerprint'][:12]}"
+        if get_release(tag) is None:
+            api("POST", "repos/Artemis311/ota/releases", {
+                "tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
+                "draft": True, "prerelease": True, "make_latest": "false",
+                "name": f"Blazer | GrapheneOS {version} | APatch {resolved['version']} + BBRv1 + Custota",
+                "body": MARKER + json.dumps({**expected, "files": {}}, sort_keys=True) + "\n-->\n"})
         partner = stage_apatch(version, True)
         prepared = prepare_feed(partner)
         publish_apatch(partner)

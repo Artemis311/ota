@@ -23,9 +23,11 @@ def api(method, endpoint, data=None):
     args = ["gh", "api", "--method", method, endpoint]
     if data is not None:
         args += ["--input", "-"]
-    out = subprocess.run(args, input=json.dumps(data) if data is not None else None,
-                         env=env, check=True, capture_output=True, text=True).stdout
-    return json.loads(out) if out.strip() else None
+    result = subprocess.run(args, input=json.dumps(data) if data is not None else None,
+                            env=env, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(f"GitHub API {method} {endpoint} failed: {result.stderr.strip()}")
+    return json.loads(result.stdout) if result.stdout.strip() else None
 
 def get_release(tag):
     env = os.environ.copy()
