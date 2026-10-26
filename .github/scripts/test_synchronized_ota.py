@@ -262,5 +262,25 @@ class CustotaIntegrationChecks(unittest.TestCase):
         from verify_apatch_custota import CUSTOTA_SHA
         self.assertEqual(manifest["profile"]["custota"]["module_sha256"], CUSTOTA_SHA)
 
+class UntaggedDraftChecks(unittest.TestCase):
+    def test_untagged_draft_is_found_after_tag_endpoint_404(self):
+        from types import SimpleNamespace
+        draft = {"id": 17, "draft": True, "tag_name": "wanted"}
+        missing = SimpleNamespace(returncode=1, stderr="HTTP 404", stdout="")
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test"}), \
+             patch.object(ap.subprocess, "run", return_value=missing), \
+             patch.object(ap, "api", return_value=[draft]):
+            self.assertEqual(ap.get_release("wanted"), draft)
+
+    def test_duplicate_drafts_are_not_silently_selected(self):
+        from types import SimpleNamespace
+        drafts = [{"id": i, "draft": True, "tag_name": "wanted"} for i in (17, 18)]
+        missing = SimpleNamespace(returncode=1, stderr="HTTP 404", stdout="")
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "test"}), \
+             patch.object(ap.subprocess, "run", return_value=missing), \
+             patch.object(ap, "api", return_value=drafts):
+            with self.assertRaises(RuntimeError):
+                ap.get_release("wanted")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

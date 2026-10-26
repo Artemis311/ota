@@ -37,7 +37,17 @@ def get_release(tag):
     if result.returncode == 0:
         return json.loads(result.stdout)
     if "HTTP 404" in result.stderr:
-        return None
+        # GitHub can omit an untagged draft from /releases/tags/<tag>.
+        # Search authenticated release pages so a retry repairs the existing draft.
+        matches = []
+        for page in range(1, 101):
+            releases = api("GET", f"repos/{REPO}/releases?per_page=100&page={page}")
+            matches.extend(r for r in releases if r["tag_name"] == tag)
+            if len(releases) < 100:
+                if len(matches) > 1:
+                    raise RuntimeError("Multiple APatch drafts use the same tag; refusing ambiguous recovery")
+                return matches[0] if matches else None
+        raise RuntimeError("APatch draft search exceeded pagination limit")
     raise RuntimeError("Cannot read APatch release: " + result.stderr)
 
 def source_ids():
