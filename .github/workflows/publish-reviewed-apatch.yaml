@@ -1,0 +1,139 @@
+name: Publish reviewed APatch 2026102101 OTA
+
+'on':
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-reviewed-apatch.yaml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-reviewed-apatch-2026102101
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'Artemis311/ota' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Publish only the verified APatch OTA requested by the repository owner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import urllib.parse
+          
+          REPO = "Artemis311/ota"
+          SOURCE_ID = 424675030
+          SOURCE_ASSET_ID = 679229413
+          SOURCE_COMMIT = "c9f49ec0be47ed00b249de42eaae507af811f530"
+          SOURCE_TAG = "private-apatch-blazer-2026102101-40386371637-1"
+          TAG = "blazer-2026102101-apatch-11282-bbrv1"
+          NAME = "blazer-2026102101-apatch.zip"
+          DIGEST = "faad5d515d29f38c880d584a1a89072831226cd00f406c101dcdbfc5dc3f735e"
+          SIZE = 1787655639
+          BODY = "Experimental APatch OTA for **Google Pixel 10 Pro (`blazer`)**, based on **GrapheneOS 2026102101**.\n\n- APatch **11282** with KernelPatch **0.13.9**, pinned source commit `280d32d967feb7ddc0fd1848aa1d1388807945d5`.\n- Embedded **SELinux Magisk Access Filter 1.1.7**.\n- Automatically selects the stock **BBRv1 (`bbr`) + `fq`** at post-fs-data and boot completion. This changes the runtime default; the compiled TCP default and stock TCP implementation are retained.\n\n**Experimental / hardware validation pending.** The build, OTA/AVB signatures, embedded KPM set and uploaded file digests passed CI verification. These checks do not establish that the device boots correctly.\n\nRequires `blazer` already configured for this repository's existing AVB/OTA signing keys. Do not install as an official Google/GrapheneOS-signed OTA, and do not downgrade a newer OS. If the old `susfs_apatch_test` AP module is installed, uninstall it before updating; data modules survive an OTA.\n\nInstall the manager separately if needed: [official APatch 11282](https://github.com/bmax121/APatch/releases/tag/11282). The manager APK is unchanged upstream software and is not attached here.\n\n**Download:** `blazer-2026102101-apatch.zip`\n\n**SHA-256:**\n```text\nfaad5d515d29f38c880d584a1a89072831226cd00f406c101dcdbfc5dc3f735e\n```\n\n**Build and sources / credits**\n\n- [Exact OTA build workflow and local modifications](https://github.com/Artemis311/ota/tree/c9f49ec0be47ed00b249de42eaae507af811f530) · [successful verification run](https://github.com/Artemis311/ota/actions/runs/40386371637)\n- OTA builder: [david568303/apatch-graphene](https://github.com/david568303/apatch-graphene/tree/c1d7484af159e573afddaf351b485f2e0995e530)\n- APatch: [bmax121/APatch, 11282](https://github.com/bmax121/APatch/tree/11282)\n- KernelPatch source with the upstream builder's GrapheneOS fixes: [david568303/KernelPatch, exact commit](https://github.com/david568303/KernelPatch/tree/280d32d967feb7ddc0fd1848aa1d1388807945d5)\n- SELinux filter: [Admirepowered/selinux_hook, exact source](https://github.com/Admirepowered/selinux_hook/tree/8ad91d00b9abd0fb3191d968b74fdc502126f8ca)\n- Stock TCP/BBRv1 source: [GrapheneOS common kernel, exact commit](https://github.com/GrapheneOS/kernel_common-6.6/tree/92137a1ac9ec89ead97b5695114ed250c03f3f48) · [GrapheneOS source instructions](https://grapheneos.org/source)\n\nOnly the APatch OTA is attached. This release does not update the public OTA feed."
+          
+          def api(method, path, data=None):
+              command = ["gh", "api", "--method", method, path]
+              if data is not None:
+                  command += ["--input", "-"]
+              result = subprocess.run(command, input=json.dumps(data) if data is not None else None,
+                                      capture_output=True, text=True, check=True)
+              return json.loads(result.stdout) if result.stdout.strip() else None
+          
+          def verify_asset(asset):
+              if (asset["name"] != NAME or asset["state"] != "uploaded" or
+                  asset["size"] != SIZE or asset.get("digest") != "sha256:" + DIGEST):
+                  raise RuntimeError("Public OTA asset verification failed")
+          
+          if os.environ["GITHUB_REPOSITORY"] != REPO:
+              raise RuntimeError("Unexpected repository")
+          source = api("GET", f"repos/{REPO}/releases/{SOURCE_ID}")
+          if (source["draft"] is not True or source["tag_name"] != SOURCE_TAG or
+              source["target_commitish"] != SOURCE_COMMIT):
+              raise RuntimeError("Private source release changed")
+          asset = next(item for item in source["assets"] if item["id"] == SOURCE_ASSET_ID)
+          if (asset["name"] != "blazer-2026102101-apatch-private-test.zip" or
+              asset["state"] != "uploaded" or asset["size"] != SIZE or
+              asset.get("digest") != "sha256:" + DIGEST):
+              raise RuntimeError("Private source OTA changed")
+          build = api("GET", f"repos/{REPO}/actions/runs/40386371637")
+          if build["head_sha"] != SOURCE_COMMIT or build["conclusion"] != "success":
+              raise RuntimeError("Source build was not successfully verified")
+          
+          lookup = subprocess.run(["gh", "api", f"repos/{REPO}/releases/tags/{TAG}"],
+                                  capture_output=True, text=True)
+          if lookup.returncode == 0:
+              release = json.loads(lookup.stdout)
+          elif "HTTP 404" in lookup.stderr:
+              release = api("POST", f"repos/{REPO}/releases", {
+                  "tag_name": TAG, "target_commitish": SOURCE_COMMIT,
+                  "name": "Pixel 10 Pro | GrapheneOS 2026102101 | APatch 11282 + BBRv1",
+                  "body": BODY, "draft": True, "prerelease": True, "make_latest": "false",
+              })
+          else:
+              raise RuntimeError("Could not resolve destination release: " + lookup.stderr)
+          if release["target_commitish"] != SOURCE_COMMIT:
+              raise RuntimeError("Destination points to a different build")
+          assets = release["assets"]
+          if len(assets) > 1 or any(item["name"] != NAME for item in assets):
+              raise RuntimeError("Destination contains unexpected attachments")
+          if assets:
+              verify_asset(assets[0])
+          elif release["draft"] is not True:
+              raise RuntimeError("Public destination unexpectedly has no verified OTA")
+          else:
+              path = Path(os.environ["RUNNER_TEMP"]) / NAME
+              try:
+                  with path.open("wb") as stream:
+                      subprocess.run(["gh", "api", f"repos/{REPO}/releases/assets/{SOURCE_ASSET_ID}",
+                                      "--header", "Accept: application/octet-stream"],
+                                     stdout=stream, check=True)
+                  with path.open("rb") as stream:
+                      actual = hashlib.file_digest(stream, "sha256").hexdigest()
+                  if path.stat().st_size != SIZE or actual != DIGEST:
+                      raise RuntimeError("Downloaded OTA does not match the verified source")
+                  destination = release["upload_url"].split("{", 1)[0]
+                  if not destination.startswith(f"https://uploads.github.com/repos/{REPO}/releases/"):
+                      raise RuntimeError("Unexpected upload destination")
+                  uploaded = subprocess.run(["gh", "api", "--method", "POST",
+                      destination + "?name=" + urllib.parse.quote(NAME, safe=""),
+                      "--header", "Content-Type: application/octet-stream", "--input", str(path)],
+                      capture_output=True, text=True, check=True)
+                  verify_asset(json.loads(uploaded.stdout))
+              finally:
+                  path.unlink(missing_ok=True)
+          checked = api("GET", f"repos/{REPO}/releases/{release['id']}")
+          if len(checked["assets"]) != 1:
+              raise RuntimeError("Refusing to publish additional attachments")
+          verify_asset(checked["assets"][0])
+          if checked["draft"] is not True:
+              if checked["body"] != BODY or checked["prerelease"] is not True:
+                  raise RuntimeError("Published release has unexpected metadata")
+          else:
+              checked = api("PATCH", f"repos/{REPO}/releases/{release['id']}", {
+                  "draft": False, "prerelease": True, "make_latest": "false", "body": BODY,
+              })
+          final = api("GET", f"repos/{REPO}/releases/{release['id']}")
+          if (final["draft"] is not False or final["prerelease"] is not True or
+              len(final["assets"]) != 1 or final["body"] != BODY):
+              raise RuntimeError("Public release verification failed")
+          verify_asset(final["assets"][0])
+          if api("GET", f"repos/{REPO}/releases/{SOURCE_ID}")["draft"] is not True:
+              raise RuntimeError("Private source archive unexpectedly became public")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("Public release: " + final["html_url"] + "\n")
+          print("Public release:", final["html_url"])
+          print("Verified: one APatch OTA asset, original SHA-256, public prerelease; private source retained.")
+          PY
