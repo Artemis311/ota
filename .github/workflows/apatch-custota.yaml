@@ -9,7 +9,7 @@ permissions:
   contents: read
 concurrency:
   group: blazer-ota-publisher
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -34,10 +34,11 @@ jobs:
         ref: c1d7484af159e573afddaf351b485f2e0995e530
         path: apatch-builder
         persist-credentials: false
-    - name: Install build prerequisites
+    - name: Check installed OTA build tools
       run: |
-        sudo apt-get update
-        sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils
+        for tool in git jq curl unzip ssh-keygen cmake gcc make xz python3 gh openssl docker; do
+          command -v "$tool" || exit 1
+        done
         docker version
     - name: Validate synchronization and feed code
       run: |

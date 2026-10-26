@@ -55,10 +55,11 @@ jobs:
         ref: ${{ github.sha }}
         path: ota
         fetch-depth: 0
-    - name: Install build prerequisites
+    - name: Check installed OTA build tools
       run: |
-        sudo apt-get update
-        sudo apt-get install -y jq curl git unzip openssh-client python3 gh cmake build-essential xz-utils
+        for tool in git jq curl unzip ssh-keygen cmake gcc make xz python3 gh openssl docker; do
+          command -v "$tool" || exit 1
+        done
         docker version
     - name: Build both variants, verify both, then publish together
       id: build
