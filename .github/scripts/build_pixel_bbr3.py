@@ -123,9 +123,12 @@ def main():
     config = common / "arch/arm64/configs/gki_defconfig"
     config_text = config.read_text()
     config_text = re.sub(r"(?m)^(?:CONFIG_DEFAULT_(?:CUBIC|BBR|RENO)=.*|CONFIG_DEFAULT_TCP_CONG=.*)\n?", "", config_text)
-    for name in ("CONFIG_TCP_CONG_ADVANCED", "CONFIG_TCP_CONG_BBR3", "CONFIG_DEFAULT_BBR3", "CONFIG_NET_SCH_FQ"):
-        config_text = re.sub(r"(?m)^(?:" + name + r"=.*|# " + name + r" is not set)\n?", "", config_text)
-        config_text += name + "=y\n"
+    # Keep savedefconfig's Kconfig order and retain existing ADVANCED/FQ entries.
+    for existing in ("CONFIG_TCP_CONG_ADVANCED=y", "CONFIG_NET_SCH_FQ=y", "CONFIG_TCP_CONG_BBR=y"):
+        if config_text.splitlines().count(existing) != 1:
+            raise RuntimeError("Unexpected stock defconfig: " + existing)
+    config_text = config_text.replace("CONFIG_TCP_CONG_BBR=y\n",
+                                      "CONFIG_TCP_CONG_BBR=y\nCONFIG_TCP_CONG_BBR3=y\nCONFIG_DEFAULT_BBR3=y\n", 1)
     config.write_text(config_text)
     shutil.copyfile(original_patch, dest / "BBRv3-android15-6.6.patch")
     shutil.copyfile(source, dest / "tcp_bbr3-source.c")
