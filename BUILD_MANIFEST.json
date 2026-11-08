@@ -1,37 +1,37 @@
 {
   "schema": 1,
   "device": "blazer",
-  "grapheneos": "2026102101",
+  "grapheneos": "2026110201",
   "builder_commit": "80ff7950d1eb397c3c44c462a19570c1b7aaa8df",
   "magisk": {
-    "kind": "developer-build",
-    "commit": "d0d98b05cac5f8673e25299675c2bf6c0a64c02a",
-    "run_id": 37826318064,
-    "artifact_id": 11573730899,
-    "url": "https://github.com/pixincreate/Magisk/actions/runs/37826318064",
-    "date": "2026-10-08T19:17:10Z",
-    "apk_sha256": "6ec09d09e7da18a356942ef73aca64a7c17fac5a399e2f7a4650031711c082ac"
+    "kind": "release",
+    "tag": "v31.1",
+    "prerelease": true,
+    "asset_id": 680795606,
+    "url": "https://github.com/pixincreate/Magisk/releases/tag/v31.1",
+    "date": "2026-10-27T07:21:03Z",
+    "apk_sha256": "5312a2ada6551c1626eb9f614e4b71950eb9216d79f2264268da0e2b62af6f9f"
   },
   "flavors": {
-    "rootless": "blazer-2026102101-rootless.zip",
-    "pixincreate": "blazer-2026102101-pixincreate-ci-d0d98b05.zip"
+    "rootless": "blazer-2026110201-rootless.zip",
+    "pixincreate": "blazer-2026110201-pixincreate-v31.1.zip"
   },
   "files": {
-    "blazer-2026102101-rootless.zip": {
-      "size": 1819256648,
-      "sha256": "15afe5233232136b760e43288a484e5be13338b8c34513c40433d0ab11001142"
+    "blazer-2026110201-rootless.zip": {
+      "size": 1832268830,
+      "sha256": "f2054446fc989fffd7c713940e1b5f94ba05e7f4223b043f81b2fb0d66874e8e"
     },
-    "blazer-2026102101-rootless.zip.csig": {
+    "blazer-2026110201-rootless.zip.csig": {
       "size": 3063,
-      "sha256": "e06916e4650866e75840795fb0cc01b25dfbdb798a56f6e41acbad254ddfee01"
+      "sha256": "b72425c02db87cf1cce5b9748689f96a14c993229525db3d6c0f8be920704469"
     },
-    "blazer-2026102101-pixincreate-ci-d0d98b05.zip": {
-      "size": 1819489721,
-      "sha256": "e60b2a4b465651bb601d7d1ae9aa2c8f228c4f70b4812ab30ba4a64903179bbe"
+    "blazer-2026110201-pixincreate-v31.1.zip": {
+      "size": 1832471287,
+      "sha256": "b70df0b2a03075c0cc43540b2ed9fe30129f23e26564bcf45b95aff496684eef"
     },
-    "blazer-2026102101-pixincreate-ci-d0d98b05.zip.csig": {
+    "blazer-2026110201-pixincreate-v31.1.zip.csig": {
       "size": 3063,
-      "sha256": "ceb7da90375611dba4189ed785edafa4d07ec65807595bbdc806d917fcad8918"
+      "sha256": "842714cc5f0719ed56d33ec146fd9665d6641eab307a3b58f6ed0b97237eb300"
     }
   }
 }
