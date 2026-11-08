@@ -195,6 +195,20 @@ class DraftRecoveryChecks(unittest.TestCase):
             build.assert_not_called()
 
 class KernelChecks(unittest.TestCase):
+    def test_memblock_validation_accepts_local_and_global_text_only(self):
+        import inspect
+        import re
+        import apatch_pipeline
+        source = inspect.getsource(apatch_pipeline.prepare)
+        pattern = re.search(r"'(memblock_phys_alloc_try_nid[^']+)'", source).group(1)
+        self.assertIn("grep -Eq", source)
+        for kind in ("t", "T"):
+            self.assertRegex(f"[+] memblock_phys_alloc_try_nid: type: {kind}, offset: 0x0230c7c8", pattern)
+        for line in ("memblock_phys_alloc_try_nid: type: D, offset: 0x1234",
+                     "memblock_phys_alloc_try_nid: type: T, offset: 0x",
+                     "no symbol: memblock_phys_alloc_try_nid"):
+            self.assertNotRegex(line, pattern)
+
     def test_android17_kernel_uses_its_own_reviewed_source(self):
         import hashlib
         banner = b"Linux version 6.18.38-android17-5-g8299417b96c4-4k (builder)\0"
