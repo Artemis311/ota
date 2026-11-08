@@ -12,6 +12,9 @@ name: Blazer - synchronized pixincreate and APatch releases
         type: string
         required: true
         default: latest
+  push:
+    branches: [main]
+    paths: [.github/workflows/blazer-v31.yaml]
   schedule:
   - cron: 23 4 * * *
 permissions:
@@ -31,7 +34,7 @@ jobs:
       deploy: ${{ steps.build.outputs.deploy }}
     env:
       OTA_VERSION: ${{ inputs.ota_version || 'latest' }}
-      PUBLISH: ${{ github.event_name == 'schedule' && 'true' || (inputs.publish && 'true' || 'false') }}
+      PUBLISH: ${{ (github.event_name == 'schedule' || github.event_name == 'push') && 'true' || (inputs.publish && 'true' || 'false') }}
       GH_PROMPT_DISABLED: '1'
     steps:
     - name: Check out inspected upstream build scripts

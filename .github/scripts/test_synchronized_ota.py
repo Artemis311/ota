@@ -195,6 +195,30 @@ class DraftRecoveryChecks(unittest.TestCase):
             build.assert_not_called()
 
 class KernelChecks(unittest.TestCase):
+    def test_android17_kernel_uses_its_own_reviewed_source(self):
+        import hashlib
+        banner = b"Linux version 6.18.38-android17-5-g8299417b96c4-4k (builder)\0"
+        kernel, prefix = bbr.identify_kernel(banner)
+        commit = prefix + "f" * (40 - len(prefix))
+        source = b"reviewed BBR fixture"
+        with patch.dict(bbr.REVIEWED_BBR_SOURCES, {"6.18": hashlib.sha256(source).hexdigest()}), \
+             patch.object(bbr, "read_url", side_effect=[json.dumps({"sha": commit}).encode(), source]) as read:
+            result = bbr.verified_source(kernel, prefix)
+        self.assertEqual(result[0], commit)
+        self.assertEqual(result[2], source)
+        self.assertIn("kernel_common-6.18/commits/" + prefix, read.call_args_list[0].args[0])
+        self.assertIn("kernel_common-6.18/" + commit, result[1])
+
+    def test_new_family_still_rejects_changed_bbr_and_wrong_commit(self):
+        kernel, prefix = bbr.identify_kernel(b"Linux version 6.18.38-android17-5-g8299417b96c4-4k ")
+        commit = prefix + "f" * (40 - len(prefix))
+        with patch.object(bbr, "read_url", side_effect=[json.dumps({"sha": commit}).encode(), b"changed TCP code"]):
+            with self.assertRaisesRegex(RuntimeError, "Stock BBR code changed"):
+                bbr.verified_source(kernel, prefix)
+        with patch.object(bbr, "read_url", return_value=json.dumps({"sha": "f" * 40}).encode()):
+            with self.assertRaisesRegex(RuntimeError, "source commit does not match"):
+                bbr.verified_source(kernel, prefix)
+
     def test_new_patchlevel_is_identified_from_real_banner(self):
         k, prefix = bbr.identify_kernel(b"\0Linux version 6.6.150-android15-8-gabcdef123456-4k (builder)\0")
         self.assertEqual(prefix, "abcdef123456")

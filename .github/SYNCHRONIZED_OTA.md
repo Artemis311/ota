@@ -10,7 +10,7 @@ APatch exposes exactly one attachment: `blazer-<version>-apatch.zip`. The checks
 
 Complete matching releases are reused. A matching incomplete draft can be rebuilt and its partial upload repaired; an inconsistent public release stops the run. The manually verified APatch release for 2026102101 is recognized by its exact release ID, commit, ZIP digest, manager digest and the initial payload-source identities. Payload-source changes invalidate that reuse.
 
-The automatic BBR profile supports identifiable clean 6.6 Android kernels. It checks the actual extracted OTA kernel, requires built-in BBR and fq, resolves the exact common-kernel commit and accepts only the reviewed BBRv1 source digest. A different kernel family, changed TCP implementation or missing required feature stops publication for review. It never silently substitutes Cubic or a newer BBR generation.
+The automatic BBR profile supports identifiable clean 6.6 and 6.18 Android kernels. It checks the actual extracted OTA kernel, requires built-in BBR and fq, resolves the exact common-kernel commit and accepts only the reviewed BBRv1 source digest for that family. A different kernel family, changed TCP implementation or missing required feature stops publication for review. It never silently substitutes Cubic or a newer BBR generation.
 
 Validation: `.github/workflows/ota-validation.yaml` checks the YAML, Python and generated shell scripts; exercises publication ordering, OS/digest binding, rollback and draft recovery; and performs read-only upstream resolution and existing-release verification. It does not receive firmware signing keys or publish releases.
 
