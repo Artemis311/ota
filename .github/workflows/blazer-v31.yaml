@@ -316,6 +316,9 @@ jobs:
                 env.pop(key, None)
             run('bash', '-euo', 'pipefail', '-c', '''
         source rooted-ota.sh
+        # The pinned builder defaults to 3.34.1, which rejects Magisk 31100.
+        # Override after sourcing; keep upstream download signature verification.
+        AVB_ROOT_VERSION=3.37.1
         createRootedOta
         GITHUB_REPO="$TARGET_REPO"
         createOtaServerData
