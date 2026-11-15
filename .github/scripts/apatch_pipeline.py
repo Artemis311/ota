@@ -37,6 +37,7 @@ def prepare():
     # Patch verifier, runtime and KPM headers together before either binary builds.
     text = replace_once(text,
         '  make -C "$sourceDir/kernel" clean',
+        '  python3 "$GITHUB_WORKSPACE/ota/.github/scripts/test_kernelpatch_backports.py" "$sourceDir"\n'
         '  python3 "$GITHUB_WORKSPACE/ota/.github/scripts/patch_kernelpatch_tools.py" "$sourceDir"\n'
         '  make -C "$sourceDir/kernel" clean')
     # Keep the patched output separate from the original downloaded OTA.

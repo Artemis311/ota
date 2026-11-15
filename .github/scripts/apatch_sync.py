@@ -87,7 +87,9 @@ def resolve_apatch():
 def expectation(version, resolved):
     if not re.fullmatch(r"\d{10}", version):
         raise RuntimeError("Invalid shared GrapheneOS version")
+    from patch_kernelpatch_tools import UPSTREAM_FIXES
     profile = {"builder": BUILDER, "kernelpatch": KP, "selinux": SELINUX,
+               "upstream_fixes": list(UPSTREAM_FIXES),
                "source_ids": source_ids(), "tcp": "stock-bbrv1-fq", "schema": 1,
                "custota": {"version": "6.7", "module_sha256": "e5a1480b53bfedc20e702541573683d6a68dacb7804792621dd7248c37ad97b6"}}
     inputs = {"grapheneos": version, "apatch": resolved["version"],

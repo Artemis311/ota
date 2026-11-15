@@ -100,6 +100,9 @@ def body(manifest, partner, replaced):
             rows.append(f"{meta['sha256']}  {name}")
     rows += ["```", "",
              f"pixincreate source: {manifest['magisk']['url']}", "",
+             "KernelPatch upstream fixes: " + ", ".join(
+                 f"[{commit[:12]}](https://github.com/bmax121/KernelPatch/commit/{commit})"
+                 for commit in apatch.get("profile", {}).get("upstream_fixes", [])), "",
              MARKER + json.dumps({**manifest, "replaced_releases": replaced}, sort_keys=True) + "\n-->",
              "<!-- synchronized-apatch-manifest\n" + json.dumps(apatch, sort_keys=True) + "\n-->\n"]
     return "\n".join(rows)
