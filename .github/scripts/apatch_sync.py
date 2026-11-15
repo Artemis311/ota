@@ -53,7 +53,8 @@ def get_release(tag):
 def source_ids():
     root = Path(os.environ["GITHUB_WORKSPACE"]) / "ota"
     result = {}
-    for name in (*LEGACY_IDS, ".github/scripts/verify_apatch_custota.py"):
+    for name in (*LEGACY_IDS, ".github/scripts/verify_apatch_custota.py",
+                 ".github/scripts/patch_kernelpatch_tools.py"):
         data = (root / name).read_bytes()
         result[name] = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
     return result
@@ -85,10 +86,13 @@ def expectation(version, resolved):
     return {"schema": 1, "device": "blazer", **inputs, "fingerprint": fingerprint}
 
 def manifest_from_body(body):
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
     if MARKER not in body:
         return None
     try:
-        return json.loads(body.split(MARKER, 1)[1].split("\n-->", 1)[0])
+        payload, closing = body.split(MARKER, 1)[1].split("\n-->", 1)
+        manifest = json.loads(payload)
+        return manifest if isinstance(manifest, dict) else None
     except (ValueError, IndexError):
         return None
 

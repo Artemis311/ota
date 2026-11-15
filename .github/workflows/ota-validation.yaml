@@ -10,6 +10,7 @@ name: Validate synchronized OTA pipeline
       - .github/scripts/verify_apatch_custota.py
       - .github/scripts/apatch_feed.py
       - .github/scripts/prepare_stock_bbr.py
+      - .github/scripts/patch_kernelpatch_tools.py
       - .github/scripts/test_synchronized_ota.py
 permissions:
   contents: read

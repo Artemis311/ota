@@ -1,5 +1,13 @@
 name: Blazer - synchronized pixincreate and APatch releases
 'on':
+  push:
+    branches: [main]
+    paths:
+    - .github/workflows/blazer-v31.yaml
+    - .github/scripts/apatch_pipeline.py
+    - .github/scripts/apatch_sync.py
+    - .github/scripts/prepare_stock_bbr.py
+    - .github/scripts/patch_kernelpatch_tools.py
   workflow_dispatch:
     inputs:
       publish:
@@ -31,7 +39,7 @@ jobs:
       deploy: ${{ steps.build.outputs.deploy }}
     env:
       OTA_VERSION: ${{ inputs.ota_version || 'latest' }}
-      PUBLISH: ${{ github.event_name == 'schedule' && 'true' || (inputs.publish && 'true' || 'false') }}
+      PUBLISH: ${{ github.event_name != 'workflow_dispatch' && 'true' || (inputs.publish && 'true' || 'false') }}
       GH_PROMPT_DISABLED: '1'
     steps:
     - name: Check out inspected upstream build scripts
@@ -55,6 +63,10 @@ jobs:
         ref: ${{ github.sha }}
         path: ota
         fetch-depth: 0
+    - name: Check repair regression tests before building firmware
+      run: |
+        python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
+        python3 ota/.github/scripts/test_synchronized_ota.py
     - name: Check installed OTA build tools
       run: |
         for tool in git jq curl unzip ssh-keygen cmake gcc make xz python3 gh openssl docker; do

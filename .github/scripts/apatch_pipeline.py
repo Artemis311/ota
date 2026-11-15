@@ -34,6 +34,12 @@ def prepare():
     if blob != SCRIPT_BLOB:
         raise RuntimeError("Unexpected builder script")
     text = source.read_text(encoding="utf-8")
+    # The vector lookup already retries the strong SP_EL0 verifier with a wide
+    # window. Apply that same fallback to the banner lookup before compiling.
+    text = replace_once(text,
+        '  ANDROID=1 cmake -S "$sourceDir/tools"',
+        '  python3 "$GITHUB_WORKSPACE/ota/.github/scripts/patch_kernelpatch_tools.py" "$sourceDir"\n'
+        '  ANDROID=1 cmake -S "$sourceDir/tools"')
     # Keep the patched output separate from the original downloaded OTA.
     text = replace_once(text, "    POTENTIAL_ASSETS['apatch']=\"${DEVICE_ID}-ota_update-${OTA_VERSION}.zip\"", "    POTENTIAL_ASSETS['apatch']=\"${DEVICE_ID}-${OTA_VERSION}-apatch-private-patched.zip\"")
     # A private test OTA must not redirect the system updater to public releases.

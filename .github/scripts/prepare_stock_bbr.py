@@ -7,6 +7,10 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
+import base64
+import urllib.error
+import urllib.parse
 import urllib.request
 
 REVIEWED_BBR_SHA = "ba7d0706259dfef5bf455f26ac4bab65f43b9209b9cfd4f761c64c89816bdfe4"
@@ -36,8 +40,35 @@ def validate_config(settings):
         raise RuntimeError("Additional BBR generations need review")
 
 def read_url(url):
-    with urllib.request.urlopen(url, timeout=60) as response:
-        return response.read()
+    # GitHub may throttle a shared Actions egress address. Retry transient
+    # failures, and use the Contents API if the raw CDN remains throttled.
+    for attempt in range(5):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "Artemis311-ota-builder"})
+            with urllib.request.urlopen(request, timeout=60) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code not in {429, 500, 502, 503, 504}:
+                raise
+            if attempt == 4:
+                parsed = urllib.parse.urlparse(url)
+                if exc.code == 429 and parsed.hostname == "raw.githubusercontent.com":
+                    owner, repo, commit, path = parsed.path.lstrip("/").split("/", 3)
+                    endpoint = (f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+                                f"?ref={commit}")
+                    record = json.loads(read_url(endpoint))
+                    if record.get("encoding") != "base64" or record.get("type") != "file":
+                        raise RuntimeError("Unexpected BBR source API response")
+                    return base64.b64decode(record["content"])
+                raise
+            retry_after = exc.headers.get("Retry-After", "") if exc.headers else ""
+            delay = min(60, max(2 ** (attempt + 1), int(retry_after) if retry_after.isdigit() else 0))
+        except (urllib.error.URLError, TimeoutError):
+            if attempt == 4:
+                raise
+            delay = 2 ** (attempt + 1)
+        print(f"Retrying BBR source download in {delay}s: {url}", flush=True)
+        time.sleep(delay)
 
 def verified_source(kernel, prefix):
     family = ".".join(kernel.split(".")[:2])

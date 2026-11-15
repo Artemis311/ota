@@ -138,6 +138,14 @@ class CompanionChecks(unittest.TestCase):
         self.assertEqual(ap.manifest_from_body(body), self.manifest)
         self.assertIsNone(ap.manifest_from_body(ap.MARKER + "{bad}\n-->"))
 
+    def test_release_editor_line_endings_preserve_manifest(self):
+        body = ap.MARKER + json.dumps(self.manifest) + "\n-->"
+        for ending in ("\n", "\r\n", "\r"):
+            self.assertEqual(ap.manifest_from_body(body.replace("\n", ending)), self.manifest)
+
+    def test_unterminated_manifest_is_rejected(self):
+        self.assertIsNone(ap.manifest_from_body(ap.MARKER + json.dumps(self.manifest)))
+
     def test_fingerprint_changes_when_payload_inputs_change(self):
         resolved = {"version": "11282", "manager_sha256": "a" * 64}
         with patch.object(ap, "source_ids", return_value={"script": "a"}):
@@ -195,6 +203,53 @@ class DraftRecoveryChecks(unittest.TestCase):
             build.assert_not_called()
 
 class KernelChecks(unittest.TestCase):
+    def test_pinned_kernelpatch_fallback_preserves_failure_and_rejects_drift(self):
+        import hashlib
+        import patch_kernelpatch_tools as kp
+        fixture = (kp.OLD + '\n    tools_logw("pid_vnr verification failed\\n");\n}').encode()
+        blob = hashlib.sha1(b"blob " + str(len(fixture)).encode() + b"\0" + fixture).hexdigest()
+        with patch.object(kp, "SOURCE_BLOB", blob):
+            changed = kp.patched_source(fixture)
+            self.assertIn(kp.NEW.encode(), changed)
+            self.assertIn(b"pid_vnr verification failed", changed)
+            with self.assertRaises(RuntimeError):
+                kp.patched_source(changed)
+        with self.assertRaises(RuntimeError):
+            kp.patched_source(fixture)
+
+    def test_bbr_download_retries_429_and_honors_bounded_retry_after(self):
+        import io
+        import urllib.error
+        from email.message import Message
+        headers = Message()
+        headers["Retry-After"] = "120"
+        failure = urllib.error.HTTPError("https://raw.githubusercontent.com/test", 429, "throttled", headers, None)
+        with patch.object(bbr.urllib.request, "urlopen", side_effect=[failure, io.BytesIO(b"source")]) as request, \
+             patch.object(bbr.time, "sleep") as sleep:
+            self.assertEqual(bbr.read_url("https://raw.githubusercontent.com/test"), b"source")
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(60)
+
+    def test_bbr_raw_throttle_uses_api_and_checksum_still_rejects_changed_source(self):
+        import base64
+        import io
+        import urllib.error
+        url = "https://raw.githubusercontent.com/GrapheneOS/kernel_common-6.18/" + "a" * 40 + "/net/ipv4/tcp_bbr.c"
+        failure = urllib.error.HTTPError(url, 429, "throttled", {}, None)
+        record = {"encoding": "base64", "type": "file", "content": base64.b64encode(b"source").decode()}
+        with patch.object(bbr.urllib.request, "urlopen", side_effect=[failure] * 5 + [io.BytesIO(json.dumps(record).encode())]) as request, \
+             patch.object(bbr.time, "sleep"):
+            self.assertEqual(bbr.read_url(url), b"source")
+        self.assertIn("api.github.com/repos/GrapheneOS/kernel_common-6.18/contents/net/ipv4/tcp_bbr.c?ref=", request.call_args.args[0].full_url)
+
+    def test_bbr_permanent_http_error_is_not_retried(self):
+        import urllib.error
+        failure = urllib.error.HTTPError("https://example.com", 404, "missing", {}, None)
+        with patch.object(bbr.urllib.request, "urlopen", side_effect=failure), patch.object(bbr.time, "sleep") as sleep:
+            with self.assertRaises(urllib.error.HTTPError):
+                bbr.read_url("https://example.com")
+        sleep.assert_not_called()
+
     def test_memblock_validation_accepts_local_and_global_text_only(self):
         import inspect
         import re
