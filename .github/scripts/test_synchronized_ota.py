@@ -206,11 +206,14 @@ class KernelChecks(unittest.TestCase):
     def test_pinned_kernelpatch_fallback_preserves_failure_and_rejects_drift(self):
         import hashlib
         import patch_kernelpatch_tools as kp
-        fixture = (kp.OLD + '\n    tools_logw("pid_vnr verification failed\\n");\n}').encode()
+        fixture = (kp.OLD + '\n    tools_logw("pid_vnr verification failed\\n");\n}' +
+                   '\n            if (aarch64_insn_extract_system_reg(insn) == AARCH64_INSN_SPCLREG_SP_EL0) {').encode()
         blob = hashlib.sha1(b"blob " + str(len(fixture)).encode() + b"\0" + fixture).hexdigest()
         with patch.object(kp, "SOURCE_BLOB", blob):
             changed = kp.patched_source(fixture)
             self.assertIn(kp.NEW.encode(), changed)
+            self.assertIn(b"pid_vnr verfied tpidrro_el0", changed)
+            self.assertIn(b"0xd5300000", changed)  # Require MRS, not an MSR write.
             self.assertIn(b"pid_vnr verification failed", changed)
             with self.assertRaises(RuntimeError):
                 kp.patched_source(changed)
