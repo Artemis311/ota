@@ -259,6 +259,14 @@ class UnifiedReleaseChecks(unittest.TestCase):
 
 
 class WorkflowChecks(unittest.TestCase):
+    def test_pages_artifact_is_unique_for_each_retry(self):
+        document = yaml.safe_load((HERE.parent / "workflows/blazer-v31.yaml").read_text())
+        steps = document["jobs"]["deploy-pages"]["steps"]
+        upload = next(x for x in steps if x.get("uses", "").startswith("actions/upload-pages-artifact@"))
+        deploy = next(x for x in steps if x.get("uses", "").startswith("actions/deploy-pages@"))
+        self.assertEqual(upload["with"]["name"], deploy["with"]["artifact_name"])
+        self.assertIn("github.run_attempt", upload["with"]["name"])
+
     def test_failed_pair_cannot_publish_actions_artifacts(self):
         document = yaml.safe_load((HERE.parent / "workflows/blazer-v31.yaml").read_text())
         artifact = next(step for step in document["jobs"]["build"]["steps"]

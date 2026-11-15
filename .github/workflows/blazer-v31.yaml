@@ -549,10 +549,13 @@ jobs:
     - name: Upload Pages site
       uses: actions/upload-pages-artifact@v3
       with:
+        name: github-pages-${{ github.run_attempt }}
         path: ota-site
     - name: Deploy Pages
       id: deployment
       uses: actions/deploy-pages@v4
+      with:
+        artifact_name: github-pages-${{ github.run_attempt }}
     - name: Verify deployed Custota feed
       env:
         PAGE_URL: ${{ steps.deployment.outputs.page_url }}
