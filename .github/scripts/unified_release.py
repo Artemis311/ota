@@ -32,9 +32,53 @@ def checked_sidecar(manifest, name):
 
 
 def create_draft(tag, title, notes):
+    ensure_tag(tag)
     return api("POST", f"repos/{REPO}/releases", {
         "tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
         "draft": True, "name": title, "body": notes})
+
+
+def ensure_tag(tag):
+    if not tag.startswith("blazer-") or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._" for c in tag):
+        raise RuntimeError("Unsafe OTA tag")
+    try:
+        api("GET", f"repos/{REPO}/git/ref/tags/{tag}")
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        api("POST", f"repos/{REPO}/git/refs", {
+            "ref": "refs/tags/" + tag, "sha": os.environ["GITHUB_SHA"]})
+
+
+def find_draft(tag, version, apk_hash):
+    from apatch_sync import expectation, resolve_apatch
+    expected_apatch = expectation(version, resolve_apatch())
+    candidates = []
+    for page in range(1, 101):
+        releases = api("GET", f"repos/{REPO}/releases?per_page=100&page={page}")
+        for release in releases:
+            if not release["draft"] or (release.get("author") or {}).get("login") != "github-actions[bot]":
+                continue
+            manifest = manifest_body(release.get("body", ""))
+            if (not manifest or manifest.get("grapheneos") != version or
+                    manifest.get("magisk", {}).get("apk_sha256") != apk_hash):
+                continue
+            partner = manifest_from_body(release.get("body", ""))
+            if partner and any(partner.get(k) != v for k, v in expected_apatch.items()):
+                continue
+            allowed = set(manifest["flavors"].values()) | {f"blazer-{version}-apatch.zip"}
+            if any(a["name"] not in allowed for a in release["assets"]):
+                continue
+            candidates.append(release)
+        if len(releases) < 100:
+            break
+    else:
+        raise RuntimeError("Draft recovery pagination limit exceeded")
+    if not candidates:
+        return None
+    release = max(candidates, key=lambda r: r["created_at"])
+    ensure_tag(tag)
+    return api("PATCH", f"repos/{REPO}/releases/{release['id']}", {"tag_name": tag})
 
 
 def upload_asset(release, path, meta):
@@ -78,7 +122,7 @@ def upload_zip_assets(release, manifest, dist):
 
 def set_public(release, public):
     return api("PATCH", f"repos/{REPO}/releases/{release['id']}", {
-        "draft": not public, "prerelease": False,
+        "tag_name": release["tag_name"], "draft": not public, "prerelease": False,
         "make_latest": "true" if public else "false"})
 
 
@@ -122,7 +166,7 @@ def store_manifest(tag, manifest, release=None):
     if not release or not release["draft"] or release.get("tag_name") != tag:
         raise RuntimeError("Only a draft's initial build manifest can be stored")
     api("PATCH", f"repos/{REPO}/releases/{release['id']}", {
-        "body": release.get("body", "").split(MARKER, 1)[0] + "\n" + MARKER
+        "tag_name": tag, "body": release.get("body", "").split(MARKER, 1)[0] + "\n" + MARKER
                 + json.dumps(manifest, sort_keys=True) + "\n-->\n"})
 
 
@@ -224,6 +268,7 @@ def unify(release, manifest, partner):
             and manifest_body(source.get("body", "")) is None):
         replaced.append(source["id"])
     updated = api("PATCH", f"repos/{REPO}/releases/{release['id']}", {
+        "tag_name": release["tag_name"],
         "name": f"Blazer | GrapheneOS {manifest['grapheneos']} | APatch + pixincreate + Rootless",
         "body": body(manifest, partner, replaced),
         "prerelease": False, "make_latest": "false" if release["draft"] else "true",

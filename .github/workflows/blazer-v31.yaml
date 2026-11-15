@@ -108,7 +108,7 @@ jobs:
         from apatch_feed import prepare_feed, write_feed
         from unified_release import (MARKER as OTA_MARKER, manifest_body, checked_sidecar,
                                      attach_sidecars, store_manifest, create_draft, release_tag, unify,
-                                     upload_zip_assets, set_public, reuse_magisk)
+                                     upload_zip_assets, set_public, reuse_magisk, find_draft)
 
         REPO = os.environ.get('GITHUB_REPOSITORY', '')
         PIXIN = 'pixincreate/Magisk'
@@ -451,6 +451,8 @@ jobs:
             # Short technical tag; the manifest still checks the FULL hash on every reuse.
             tag = release_tag(version, apk_sha256) if publish else f'blazer-{version}-test'
             release = release_by_tag(tag) if publish else None
+            if publish and release is None:
+                release = find_draft(tag, version, apk_sha256)
             if publish and release is None and '-apatch-' not in tag:
                 legacy_tag = f'blazer-{version}-pixin-{apk_sha256}'
                 release = release_by_tag(legacy_tag)

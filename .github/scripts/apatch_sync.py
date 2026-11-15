@@ -45,6 +45,12 @@ def get_release(tag):
             releases = api("GET", f"repos/{REPO}/releases?per_page=100&page={page}")
             matches.extend(r for r in releases if r["tag_name"] == tag)
             for candidate in releases:
+                draft_manifest = manifest_from_body(candidate.get("body", ""))
+                if (candidate["draft"] and candidate["tag_name"] != tag
+                        and "<!-- synchronized-ota-manifest" not in candidate.get("body", "")
+                        and draft_manifest and tag == (f"blazer-{draft_manifest['grapheneos']}-apatch-{draft_manifest['apatch']}-"
+                                                       + draft_manifest["fingerprint"][:12])):
+                    matches.append(candidate)
                 if "<!-- synchronized-ota-manifest" not in candidate.get("body", ""):
                     continue
                 manifest = manifest_from_body(candidate.get("body", ""))
@@ -233,6 +239,11 @@ def stage_apatch(version, publish):
             return legacy
     tag = f"blazer-{version}-apatch-{resolved['version']}-{expected['fingerprint'][:12]}"
     release = get_release(tag) if publish else None
+    from unified_release import ensure_tag
+    if (release and release["draft"] and release["tag_name"] != tag
+            and "<!-- synchronized-ota-manifest" not in release.get("body", "")):
+        ensure_tag(tag)
+        release = api("PATCH", f"repos/{REPO}/releases/{release['id']}", {"tag_name": tag})
     if release:
         manifest = manifest_from_body(release.get("body", ""))
         if not manifest or any(manifest.get(k) != v for k, v in expected.items()):
@@ -252,6 +263,7 @@ def stage_apatch(version, publish):
     if not publish:
         return {"release": None, "expected": expected, "manifest": manifest}
     if release is None:
+        ensure_tag(tag)
         release = api("POST", f"repos/{REPO}/releases", {
             "tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
             "draft": True, "prerelease": True, "make_latest": "false",

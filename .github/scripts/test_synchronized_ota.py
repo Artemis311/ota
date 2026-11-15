@@ -60,6 +60,7 @@ class PublicationTests(unittest.TestCase):
                          "store_manifest": lambda *a: None,
                          "create_draft": lambda *a: release,
                          "reuse_magisk": lambda *a: None,
+                         "find_draft": lambda *a: None,
                          "upload_zip_assets": lambda release, *a: events.append("upload-magisk") or release,
                          "set_public": lambda release, public: events.append("publish-magisk" if public else "rollback-magisk"),
                          "unify": lambda release, manifest, partner: {**partner, "release": release},
@@ -210,6 +211,33 @@ class UnifiedReleaseChecks(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.unified.checked_sidecar(manifest, "test.csig")
 
+    def test_tag_reference_is_created_before_a_new_draft(self):
+        with patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), \
+             patch.object(self.unified, "api", side_effect=[RuntimeError("HTTP 404"), {}, {"id": 7}]) as api:
+            self.unified.create_draft("blazer-new", "title", "notes")
+        self.assertEqual(api.call_args_list[1].args,
+                         ("POST", f"repos/{ap.REPO}/git/refs", {"ref": "refs/tags/blazer-new", "sha": "a" * 40}))
+        self.assertEqual(api.call_args_list[2].args[0], "POST")
+        with patch.object(self.unified, "api") as api:
+            with self.assertRaises(RuntimeError):
+                self.unified.ensure_tag("unsafe/tag")
+            api.assert_not_called()
+
+    def test_untagged_combined_draft_is_recovered_by_verified_inputs(self):
+        draft = {**self.release, "draft": True, "tag_name": "untagged-random",
+                 "author": {"login": "github-actions[bot]"}, "created_at": "2026-11-15T17:00:00Z"}
+        manifest = copy.deepcopy(self.manifest)
+        manifest["magisk"] = {"apk_sha256": "c" * 64}
+        draft["body"] = self.unified.MARKER + json.dumps(manifest) + "\n-->\n" + ap.MARKER + json.dumps(self.apatch) + "\n-->"
+        with patch.object(ap, "resolve_apatch", return_value={}), \
+             patch.object(ap, "expectation", return_value=self.expected), \
+             patch.object(self.unified, "ensure_tag") as ensure, \
+             patch.object(self.unified, "api", side_effect=[[draft], {**draft, "tag_name": self.tag}]) as api:
+            result = self.unified.find_draft(self.tag, self.version, "c" * 64)
+        self.assertEqual(result["tag_name"], self.tag)
+        ensure.assert_called_once_with(self.tag)
+        self.assertEqual(api.call_args.args, ("PATCH", f"repos/{ap.REPO}/releases/123", {"tag_name": self.tag}))
+
     def test_known_draft_is_used_without_eventual_tag_lookup(self):
         draft = {**self.release, "draft": True}
         with patch.object(self.unified, "get_release") as lookup, \
@@ -346,7 +374,8 @@ class DraftRecoveryChecks(unittest.TestCase):
         expected = {"schema": 1, "device": "blazer", "grapheneos": "2026102201",
                     "apatch": "11282", "fingerprint": "f" * 64}
         manifest = {**expected, "files": {"blazer-2026102201-apatch.zip": {"sha256": "a" * 64, "size": 20}}}
-        draft = {"id": 5, "draft": True, "assets": [], "body": ap.MARKER + json.dumps(manifest) + "\n-->",
+        draft = {"id": 5, "draft": True, "tag_name": "blazer-2026102201-apatch-11282-" + "f" * 12,
+                 "assets": [], "body": ap.MARKER + json.dumps(manifest) + "\n-->",
                  "upload_url": "https://uploads.github.com/repos/Artemis311/ota/releases/5/assets{?name}"}
         complete = {**draft, "assets": [{"name": "blazer-2026102201-apatch.zip", "size": 20,
                     "state": "uploaded", "digest": "sha256:" + "a" * 64}]}
