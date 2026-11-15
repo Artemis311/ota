@@ -423,6 +423,46 @@ class KernelChecks(unittest.TestCase):
                 bbr.validate_config(bad)
 
 class FeedChecks(unittest.TestCase):
+    def test_unchanged_feed_with_untracked_cache_does_not_attempt_empty_commit(self):
+        import base64, hashlib, subprocess
+        def git(*args):
+            return subprocess.run(["git", *map(str, args)], check=True, capture_output=True, text=True).stdout.strip()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            remote, seed, prepared = root / "remote.git", root / "seed", root / "prepared"
+            git("init", "--bare", "--initial-branch=main", remote)
+            git("clone", remote, seed)
+            git("-C", seed, "checkout", "-b", "gh-pages")
+            git("-C", seed, "config", "user.name", "test")
+            git("-C", seed, "config", "user.email", "test@example.invalid")
+            (seed / ".nojekyll").touch()
+            (seed / "index.html").write_text("feed")
+            (seed / "server-owner.txt").write_text(ap.REPO)
+            git("-C", seed, "add", ".")
+            git("-C", seed, "commit", "-m", "seed")
+            git("-C", seed, "push", "origin", "gh-pages")
+            prepared.mkdir()
+            (prepared / "manifest.json").write_text(json.dumps({"grapheneos": "2026111301", "signature": "test.csig"}))
+            (prepared / "blazer.json").write_text('{"version":2}')
+            (prepared / "test.csig").write_bytes(b"signed")
+            data = b"signature"
+            names = {"pixincreate": "blazer-2026111301-pixin.zip", "rootless": "blazer-2026111301-rootless.zip"}
+            manifest = {"grapheneos": "2026111301", "flavors": names,
+                "files": {n + ".csig": {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()} for n in names.values()},
+                "sidecars": {n + ".csig": base64.b64encode(data).decode() for n in names.values()}}
+            scope = coordinator()
+            heads = []
+            for attempt in (1, 2):
+                workspace = root / str(attempt)
+                workspace.mkdir()
+                git("clone", remote, workspace / "ota")
+                (workspace / "ota/untracked-cache.pyc").write_bytes(b"cache")
+                with patch.dict(os.environ, {"GITHUB_WORKSPACE": str(workspace)}), \
+                     patch.dict(scope, {"output": lambda *a: None}):
+                    scope["sync_feed"](manifest, "blazer-test", prepared)
+                heads.append(git("--git-dir", remote, "rev-parse", "refs/heads/gh-pages"))
+            self.assertEqual(heads[0], heads[1])
+
     def test_apatch_feed_preserves_other_channels_and_refuses_downgrade(self):
         from apatch_feed import write_feed
         with tempfile.TemporaryDirectory() as folder:

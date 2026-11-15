@@ -413,7 +413,7 @@ jobs:
             git('add', '.nojekyll', 'server-owner.txt', 'index.html', 'pixincreate/blazer.json',
                 'rootless/blazer.json', 'BUILD_MANIFEST.json', 'last-check-month.txt', *apatch_paths,
                 *[f'{flavor}/{tag}-{flavor}.zip.csig' for flavor in manifest['flavors']])
-            if git('status', '--porcelain'):
+            if git('diff', '--cached', '--name-only'):
                 git('commit', '-m', f'Publish/check blazer OTA {manifest["grapheneos"]}')
                 git('push', '--set-upstream', 'origin', 'gh-pages')
             output('deploy', 'true')
