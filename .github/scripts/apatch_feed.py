@@ -73,6 +73,8 @@ def prepare_feed(partner):
             if head != BUILDER or blob != BLOB:
                 raise RuntimeError("Custota downloader is not the inspected builder")
             local = workspace / "apatch-builder/dist" / name
+            if not local.exists():
+                local = workspace / "unified-release" / name
             ota = local if local.exists() else temp / name
             if not local.exists():
                 url = f"https://github.com/{REPO}/releases/download/{tag}/{name}"

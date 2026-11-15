@@ -55,6 +55,10 @@ class PublicationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {
                 "OTA_VERSION": version, "PUBLISH": "false" if test_only else "true"}):
             overrides = {"resolve_magisk": lambda: ("test", magisk), "output": lambda *a: None,
+                         "release_tag": lambda *a: "blazer-test",
+                         "attach_sidecars": lambda manifest, *a: manifest,
+                         "store_manifest": lambda *a: None,
+                         "unify": lambda release, manifest, partner: {**partner, "release": release},
                          "pages": lambda *a: [], "release_by_tag": releases,
                          "existing_manifest": manifests, "DIST": Path(folder),
                          "build": lambda *a: events.append("build-magisk") or manifest,
@@ -153,6 +157,106 @@ class CompanionChecks(unittest.TestCase):
         with patch.object(ap, "source_ids", return_value={"script": "b"}):
             second = ap.expectation("2026102101", resolved)
         self.assertNotEqual(first["fingerprint"], second["fingerprint"])
+
+class UnifiedReleaseChecks(unittest.TestCase):
+    def setUp(self):
+        import unified_release as unified
+        self.unified = unified
+        self.version = "2026111301"
+        self.tag = "blazer-test"
+        self.apatch = {"schema": 1, "device": "blazer", "grapheneos": self.version,
+                       "apatch": "11282", "fingerprint": "f" * 64}
+        self.ap_name = f"blazer-{self.version}-apatch.zip"
+        self.apatch["files"] = {self.ap_name: {"size": 20, "sha256": "a" * 64}}
+        self.manifest = {"grapheneos": self.version,
+            "flavors": {"pixincreate": f"blazer-{self.version}-pixincreate-v31.1.zip",
+                        "rootless": f"blazer-{self.version}-rootless.zip"}}
+        self.manifest["files"] = {n: {"size": 30, "sha256": "b" * 64}
+                                  for n in self.manifest["flavors"].values()}
+        self.assets = [{"name": n, "state": "uploaded", "size": m["size"],
+                        "digest": "sha256:" + m["sha256"], "id": i}
+                       for i, (n, m) in enumerate({**self.manifest["files"], **self.apatch["files"]}.items())]
+        self.release = {"id": 123, "tag_name": self.tag, "draft": False,
+                        "html_url": "https://github.com/Artemis311/ota/releases/tag/" + self.tag,
+                        "assets": self.assets,
+                        "body": unified.MARKER + json.dumps(self.manifest) + "\n-->\n"
+                                + ap.MARKER + json.dumps(self.apatch) + "\n-->"}
+        self.expected = {k: v for k, v in self.apatch.items() if k != "files"}
+
+    def test_combined_release_checks_all_three_zip_digests(self):
+        ap.validate_release(self.release, self.expected, self.apatch)
+        for mutate in ("extra", "missing", "digest"):
+            bad = copy.deepcopy(self.release)
+            if mutate == "extra":
+                bad["assets"].append({"name": "unrelated.apk"})
+            elif mutate == "missing":
+                bad["assets"].pop(0)
+            else:
+                bad["assets"][0]["digest"] = "sha256:" + "c" * 64
+            with self.assertRaises(RuntimeError):
+                ap.validate_release(bad, self.expected, self.apatch)
+
+    def test_sidecar_data_is_bound_to_original_size_and_hash(self):
+        import base64, hashlib
+        data = b"signed Custota metadata"
+        manifest = {"files": {"test.csig": {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}},
+                    "sidecars": {"test.csig": base64.b64encode(data).decode()}}
+        self.assertEqual(self.unified.checked_sidecar(manifest, "test.csig"), data)
+        manifest["sidecars"]["test.csig"] = base64.b64encode(b"changed").decode()
+        with self.assertRaises(RuntimeError):
+            self.unified.checked_sidecar(manifest, "test.csig")
+
+    def test_combined_manifest_accepts_github_editor_line_endings(self):
+        body = self.unified.MARKER + json.dumps(self.manifest) + "\n-->"
+        self.assertEqual(self.unified.manifest_body(body.replace("\n", "\r\n")), self.manifest)
+
+    def test_apatch_update_on_same_os_gets_a_new_release_tag(self):
+        with patch.object(self.unified, "get_release", return_value=self.release), \
+             patch.object(ap, "resolve_apatch", return_value={}), \
+             patch.object(ap, "expectation", return_value=self.expected):
+            original = self.unified.release_tag(self.version, "a" * 64)
+        with patch.object(self.unified, "get_release", return_value=self.release), \
+             patch.object(ap, "resolve_apatch", return_value={}), \
+             patch.object(ap, "expectation", return_value={**self.expected, "fingerprint": "e" * 64}):
+            updated = self.unified.release_tag(self.version, "a" * 64)
+        self.assertNotEqual(original, updated)
+        self.assertTrue(updated.endswith("-apatch-" + "e" * 12))
+
+    def test_cleanup_waits_for_all_feeds_and_preserves_zip_assets(self):
+        with tempfile.TemporaryDirectory() as folder:
+            site = Path(folder)
+            for flavor in ("apatch", "pixincreate", "rootless"):
+                (site / flavor).mkdir()
+                (site / flavor / "blazer.json").write_text(json.dumps({"full": {
+                    "location_ota": f"https://github.com/{ap.REPO}/releases/download/{self.tag}/test.zip"}}))
+            (site / "apatch/manifest.json").write_text(json.dumps({"release_id": 123}))
+            initial = copy.deepcopy(self.release)
+            initial["assets"].append({"name": "ota.crt", "id": 999})
+            with patch.object(self.unified, "api", side_effect=[initial, None, self.release]) as api, \
+                 patch.object(self.unified, "verify_live_sidecars"):
+                self.unified.cleanup(site)
+            self.assertEqual(api.call_args_list[1].args, ("DELETE", f"repos/{ap.REPO}/releases/assets/999"))
+            (site / "rootless/blazer.json").write_text(json.dumps({"full": {"location_ota": "old-release"}}))
+            with patch.object(self.unified, "api", return_value=initial) as api:
+                with self.assertRaisesRegex(RuntimeError, "Feed still points"):
+                    self.unified.cleanup(site)
+                self.assertEqual(api.call_count, 1)
+
+    def test_live_signature_mismatch_is_rejected(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            site = Path(folder)
+            for flavor in ("apatch", "pixincreate", "rootless"):
+                (site / flavor).mkdir()
+                (site / flavor / "signature.csig").write_bytes(b"verified")
+                (site / flavor / "blazer.json").write_text(json.dumps({"full": {
+                    "location_csig": f"https://artemis311.github.io/ota/{flavor}/signature.csig"}}))
+            with patch.object(self.unified.subprocess, "run", return_value=SimpleNamespace(stdout=b"verified")):
+                self.unified.verify_live_sidecars(site)
+            with patch.object(self.unified.subprocess, "run", return_value=SimpleNamespace(stdout=b"wrong")):
+                with self.assertRaisesRegex(RuntimeError, "Live Custota signature differs"):
+                    self.unified.verify_live_sidecars(site)
+
 
 class WorkflowChecks(unittest.TestCase):
     def test_failed_pair_cannot_publish_actions_artifacts(self):

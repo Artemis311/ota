@@ -8,6 +8,8 @@ name: Blazer - synchronized pixincreate and APatch releases
     - .github/scripts/apatch_sync.py
     - .github/scripts/prepare_stock_bbr.py
     - .github/scripts/patch_kernelpatch_tools.py
+    - .github/scripts/unified_release.py
+    - .github/scripts/apatch_feed.py
   workflow_dispatch:
     inputs:
       publish:
@@ -104,6 +106,8 @@ jobs:
         sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"]) / "ota/.github/scripts"))
         from apatch_sync import stage_apatch, publish_apatch, rollback_apatch
         from apatch_feed import prepare_feed, write_feed
+        from unified_release import (MARKER as OTA_MARKER, manifest_body, checked_sidecar,
+                                     attach_sidecars, store_manifest, release_tag, unify)
 
         REPO = os.environ.get('GITHUB_REPOSITORY', '')
         PIXIN = 'pixincreate/Magisk'
@@ -265,6 +269,12 @@ jobs:
                 return False
             for name, meta in files.items():
                 a = assets.get(name)
+                if not a and name.endswith('.csig'):
+                    try:
+                        checked_sidecar(manifest, name)
+                    except (ValueError, KeyError, RuntimeError):
+                        return False
+                    continue
                 if not a or a.get('state') != 'uploaded' or a['size'] != meta['size']:
                     return False
                 if meta['size'] <= 0 or not re.fullmatch(r'[0-9a-f]{64}', meta['sha256']):
@@ -275,6 +285,9 @@ jobs:
 
 
         def existing_manifest(release, version):
+            embedded = manifest_body(release.get('body', ''))
+            if embedded is not None:
+                return embedded if valid_manifest(embedded, release, version) else None
             assets = {a['name']: a for a in release['assets']}
             if 'BUILD_MANIFEST.json' not in assets:
                 return None
@@ -388,14 +401,18 @@ jobs:
                 base = f'https://github.com/{REPO}/releases/download/{tag}/{name}'
                 folder = repo_dir / flavor
                 folder.mkdir(exist_ok=True)
+                signature_name = tag + '-' + flavor + '.zip.csig'
+                (folder / signature_name).write_bytes(checked_sidecar(manifest, name + '.csig'))
                 (folder / 'blazer.json').write_text(json.dumps({'version': 2, 'full': {
-                    'location_ota': base, 'location_csig': base + '.csig'}, 'incremental': {}}, indent=2) + '\n')
+                    'location_ota': base, 'location_csig': f'https://artemis311.github.io/ota/{flavor}/{signature_name}'},
+                    'incremental': {}}, indent=2) + '\n')
             apatch_paths = write_feed(repo_dir, apatch_metadata)
             old.write_text(json.dumps(manifest, indent=2) + '\n')
             # Monthly repository activity avoids 60-day inactivity during long OS release gaps.
             (repo_dir / 'last-check-month.txt').write_text(datetime.now(timezone.utc).strftime('%Y-%m') + '\n')
             git('add', '.nojekyll', 'server-owner.txt', 'index.html', 'pixincreate/blazer.json',
-                'rootless/blazer.json', 'BUILD_MANIFEST.json', 'last-check-month.txt', *apatch_paths)
+                'rootless/blazer.json', 'BUILD_MANIFEST.json', 'last-check-month.txt', *apatch_paths,
+                *[f'{flavor}/{tag}-{flavor}.zip.csig' for flavor in manifest['flavors']])
             if git('status', '--porcelain'):
                 git('commit', '-m', f'Publish/check blazer OTA {manifest["grapheneos"]}')
                 git('push', '--set-upstream', 'origin', 'gh-pages')
@@ -431,9 +448,9 @@ jobs:
             if not re.fullmatch(r'[0-9a-f]{64}', apk_sha256):
                 raise RuntimeError('Invalid verified APK digest')
             # Short technical tag; the manifest still checks the FULL hash on every reuse.
-            tag = f'blazer-{version}-pixin-{apk_sha256[:12]}'
+            tag = release_tag(version, apk_sha256) if publish else f'blazer-{version}-test'
             release = release_by_tag(tag) if publish else None
-            if publish and release is None:
+            if publish and release is None and '-apatch-' not in tag:
                 legacy_tag = f'blazer-{version}-pixin-{apk_sha256}'
                 release = release_by_tag(legacy_tag)
                 if release is not None:
@@ -461,15 +478,21 @@ jobs:
                            '--title', f'Blazer | GrapheneOS {version} | pixincreate {display_version}', '--notes-file', str(notes))
                         notes.unlink()
                     # Replace partial draft uploads only. Never overwrite published firmware.
-                    gh('release', 'upload', tag, '--repo', REPO, '--clobber', *[str(p) for p in sorted(DIST.iterdir())])
+                    manifest = attach_sidecars(manifest, release, DIST, gh)
+                    store_manifest(tag, manifest)
+                    gh('release', 'upload', tag, '--repo', REPO, '--clobber',
+                       *[str(p) for p in sorted(DIST.iterdir()) if p.name.endswith('.zip')])
                     release = release_by_tag(tag)
                     manifest = existing_manifest(release, version)
                     if manifest is None:
                         raise RuntimeError('Release upload verification failed; draft retained for retry')
             # Both packages must be complete and use this exact OS version before publication.
+            manifest = attach_sidecars(manifest, release, DIST, gh)
             partner = stage_apatch(version, True)
             if partner['manifest']['grapheneos'] != manifest['grapheneos']:
                 raise RuntimeError('Companion OS version mismatch')
+            partner = unify(release, manifest, partner)
+            release = partner['release']
             apatch_metadata = prepare_feed(partner)
             newly_published_magisk = bool(release['draft'])
             try:
@@ -493,7 +516,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.build.outputs.artifact_name }}
-        path: builder/dist/
+        path: builder/dist/*.zip
         if-no-files-found: error
         compression-level: 0
         retention-days: 7
@@ -507,7 +530,7 @@ jobs:
     if: needs.build.outputs.deploy == 'true'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
       pages: write
       id-token: write
     environment:
@@ -556,3 +579,14 @@ jobs:
         assert hashlib.sha256(destination.read_bytes()).hexdigest() == record["csig_sha256"], "Deployed APatch signature differs"
         print("Verified public APatch signature and all three update feeds")
         PY
+
+    - name: Check out release maintenance scripts
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.sha }}
+        path: ota-maintenance
+        persist-credentials: false
+    - name: Keep only the combined release and its three ZIPs
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 ota-maintenance/.github/scripts/unified_release.py ota-site

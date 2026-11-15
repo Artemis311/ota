@@ -40,13 +40,23 @@ def get_release(tag):
         # GitHub can omit an untagged draft from /releases/tags/<tag>.
         # Search authenticated release pages so a retry repairs the existing draft.
         matches = []
+        companions = []
         for page in range(1, 101):
             releases = api("GET", f"repos/{REPO}/releases?per_page=100&page={page}")
             matches.extend(r for r in releases if r["tag_name"] == tag)
+            for candidate in releases:
+                if "<!-- synchronized-ota-manifest" not in candidate.get("body", ""):
+                    continue
+                manifest = manifest_from_body(candidate.get("body", ""))
+                if manifest and tag == (f"blazer-{manifest['grapheneos']}-apatch-{manifest['apatch']}-"
+                                        + manifest["fingerprint"][:12]):
+                    companions.append(candidate)
             if len(releases) < 100:
                 if len(matches) > 1:
                     raise RuntimeError("Multiple APatch drafts use the same tag; refusing ambiguous recovery")
-                return matches[0] if matches else None
+                if matches:
+                    return matches[0]
+                return max(companions, key=lambda r: r.get("published_at") or r.get("created_at", "")) if companions else None
         raise RuntimeError("APatch draft search exceeded pagination limit")
     raise RuntimeError("Cannot read APatch release: " + result.stderr)
 
@@ -101,11 +111,30 @@ def validate_release(release, expected, manifest, require_public=False):
         raise RuntimeError("APatch release does not match the shared OS and exact profile")
     files = manifest.get("files", {})
     name = f"blazer-{expected['grapheneos']}-apatch.zip"
-    if set(files) != {name} or len(release["assets"]) != 1:
+    if set(files) != {name}:
+        raise RuntimeError("APatch must expose exactly one OTA ZIP")
+    from unified_release import manifest_body
+    combined = manifest_body(release.get("body", ""))
+    if combined:
+        names = set(combined.get("flavors", {}).values())
+        if len(names) != 2 or any(not re.fullmatch(r"blazer-[A-Za-z0-9._-]+\.zip", n) for n in names):
+            raise RuntimeError("Invalid combined release variants")
+        allowed = names | {name, "BUILD_MANIFEST.json", "SHA256SUMS", "ota.crt"} | {n + ".csig" for n in names}
+        if any(a["name"] not in allowed for a in release["assets"]):
+            raise RuntimeError("Unexpected combined release attachment")
+        for zip_name in names:
+            asset = next((a for a in release["assets"] if a["name"] == zip_name), {})
+            meta = combined.get("files", {}).get(zip_name, {})
+            if (asset.get("state") != "uploaded" or asset.get("size", 0) <= 0 or
+                asset.get("size") != meta.get("size") or
+                asset.get("digest") != "sha256:" + meta.get("sha256", "")):
+                raise RuntimeError("Combined OTA ZIP verification failed")
+    elif len(release["assets"]) != 1:
         raise RuntimeError("APatch must expose exactly one OTA ZIP")
     if require_public and release["draft"]:
         raise RuntimeError("APatch release is still a draft")
-    asset, recorded = release["assets"][0], files[name]
+    asset = next((a for a in release["assets"] if a["name"] == name), {})
+    recorded = files[name]
     if (asset["name"] != name or asset["state"] != "uploaded" or asset["size"] <= 0 or
         asset["size"] != recorded["size"] or
         not re.fullmatch(r"[0-9a-f]{64}", recorded.get("sha256", "")) or
@@ -250,7 +279,8 @@ def publish_apatch(partner):
     validate_release(current, partner["expected"], partner["manifest"])
     if current["draft"]:
         current = api("PATCH", f"repos/{REPO}/releases/{release['id']}",
-                      {"draft": False, "prerelease": True, "make_latest": "false"})
+                      {"draft": False, "prerelease": "<!-- synchronized-ota-manifest" not in current.get("body", ""),
+                       "make_latest": "true" if "<!-- synchronized-ota-manifest" in current.get("body", "") else "false"})
     validate_release(current, partner["expected"], partner["manifest"], require_public=True)
     print("Verified public APatch companion:", current["html_url"], flush=True)
 
