@@ -1,11 +1,11 @@
 {
   "grapheneos": "2026111301",
-  "release_id": 446035792,
-  "tag": "blazer-2026111301-pixin-5312a2ada655",
+  "release_id": 446246680,
+  "tag": "blazer-2026111301-pixin-5312a2ada655-apatch-7cd2312f246f",
   "ota": {
-    "sha256": "d37b96f2507fa31ac2f47f4c0c80b72188169cb3f54babcb3714a7c7d7d8a2bb",
-    "size": 1836340511
+    "sha256": "904d8d9991cd9053909a730bf0afba50601a8e79a74e12a943175cc5b6339d16",
+    "size": 1836340687
   },
-  "signature": "blazer-2026111301-pixin-5312a2ada655.zip.csig",
-  "csig_sha256": "76644f0e69f6c8b744309730b324ea7a389d329445bfd6dc9bce419a10bc2819"
+  "signature": "blazer-2026111301-pixin-5312a2ada655-apatch-7cd2312f246f.zip.csig",
+  "csig_sha256": "716fd5bfbfbcaa38ba8ff4057db98c4ce0b5990f09967ad7e25d644a7a11180f"
 }
