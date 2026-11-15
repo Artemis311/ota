@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "device": "blazer",
-  "grapheneos": "2026110201",
+  "grapheneos": "2026111301",
   "builder_commit": "80ff7950d1eb397c3c44c462a19570c1b7aaa8df",
   "magisk": {
     "kind": "release",
@@ -13,25 +13,25 @@
     "apk_sha256": "5312a2ada6551c1626eb9f614e4b71950eb9216d79f2264268da0e2b62af6f9f"
   },
   "flavors": {
-    "rootless": "blazer-2026110201-rootless.zip",
-    "pixincreate": "blazer-2026110201-pixincreate-v31.1.zip"
+    "rootless": "blazer-2026111301-rootless.zip",
+    "pixincreate": "blazer-2026111301-pixincreate-v31.1.zip"
   },
   "files": {
-    "blazer-2026110201-rootless.zip": {
-      "size": 1832268830,
-      "sha256": "f2054446fc989fffd7c713940e1b5f94ba05e7f4223b043f81b2fb0d66874e8e"
+    "blazer-2026111301-rootless.zip": {
+      "size": 1835934904,
+      "sha256": "02d821a1deca7e1cdbef4d7a2dc3f3c87a143191f2bd2ea9238ed5aa3b67635c"
     },
-    "blazer-2026110201-rootless.zip.csig": {
+    "blazer-2026111301-rootless.zip.csig": {
       "size": 3063,
-      "sha256": "b72425c02db87cf1cce5b9748689f96a14c993229525db3d6c0f8be920704469"
+      "sha256": "ab95660c8b997fe4bc1ba410528ae6605d3cf7189bd2e75d9805312113866c05"
     },
-    "blazer-2026110201-pixincreate-v31.1.zip": {
-      "size": 1832471287,
-      "sha256": "b70df0b2a03075c0cc43540b2ed9fe30129f23e26564bcf45b95aff496684eef"
+    "blazer-2026111301-pixincreate-v31.1.zip": {
+      "size": 1836137350,
+      "sha256": "5ac44bcf514723b97615382f7ac2011e703176b5c07a59d18c1247e8f1d31173"
     },
-    "blazer-2026110201-pixincreate-v31.1.zip.csig": {
+    "blazer-2026111301-pixincreate-v31.1.zip.csig": {
       "size": 3063,
-      "sha256": "842714cc5f0719ed56d33ec146fd9665d6641eab307a3b58f6ed0b97237eb300"
+      "sha256": "8aac573e39662210c9a5defa908dc3aaf0b368ce34e5e865747446a25c1479f0"
     }
   }
 }

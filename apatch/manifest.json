@@ -1,11 +1,11 @@
 {
-  "grapheneos": "2026110201",
-  "release_id": 438285472,
-  "tag": "blazer-2026110201-apatch-11282-c586cd31991f",
+  "grapheneos": "2026111301",
+  "release_id": 446140586,
+  "tag": "blazer-2026111301-apatch-11282-a80c5ddcfb0a",
   "ota": {
-    "sha256": "f9bb048031603a828c66d496c81671f4cb7e71d7a6a1ee0fd4fa5affdf36e8f5",
-    "size": 1832648460
+    "sha256": "d37b96f2507fa31ac2f47f4c0c80b72188169cb3f54babcb3714a7c7d7d8a2bb",
+    "size": 1836340511
   },
-  "signature": "blazer-2026110201-apatch-11282-c586cd31991f.zip.csig",
-  "csig_sha256": "d20bc9c163783fb24250b6483a6d1e29b682a6eca93a9516d5a65455417c8c63"
+  "signature": "blazer-2026111301-apatch-11282-a80c5ddcfb0a.zip.csig",
+  "csig_sha256": "76644f0e69f6c8b744309730b324ea7a389d329445bfd6dc9bce419a10bc2819"
 }
