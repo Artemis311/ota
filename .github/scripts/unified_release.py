@@ -31,9 +31,15 @@ def checked_sidecar(manifest, name):
     return data
 
 
-def store_manifest(tag, manifest):
-    release = get_release(tag)
-    if not release or not release["draft"]:
+def create_draft(tag, title, notes):
+    return api("POST", f"repos/{REPO}/releases", {
+        "tag_name": tag, "target_commitish": os.environ["GITHUB_SHA"],
+        "draft": True, "name": title, "body": notes})
+
+
+def store_manifest(tag, manifest, release=None):
+    release = release or get_release(tag)
+    if not release or not release["draft"] or release.get("tag_name") != tag:
         raise RuntimeError("Only a draft's initial build manifest can be stored")
     api("PATCH", f"repos/{REPO}/releases/{release['id']}", {
         "body": release.get("body", "").split(MARKER, 1)[0] + "\n" + MARKER

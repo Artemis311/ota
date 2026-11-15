@@ -107,7 +107,7 @@ jobs:
         from apatch_sync import stage_apatch, publish_apatch, rollback_apatch
         from apatch_feed import prepare_feed, write_feed
         from unified_release import (MARKER as OTA_MARKER, manifest_body, checked_sidecar,
-                                     attach_sidecars, store_manifest, release_tag, unify)
+                                     attach_sidecars, store_manifest, create_draft, release_tag, unify)
 
         REPO = os.environ.get('GITHUB_REPOSITORY', '')
         PIXIN = 'pixincreate/Magisk'
@@ -474,12 +474,12 @@ jobs:
                     if release is None:
                         notes = DIST / 'release-notes.txt'
                         notes.write_text(f'GrapheneOS {version} for blazer.\n\npixincreate source: {manifest["magisk"]["url"]}\n\nBuilder: {PIN}\n\nUse only with your matching AVB and OTA signing keys.\n')
-                        gh('release', 'create', tag, '--repo', REPO, '--target', 'main', '--draft',
-                           '--title', f'Blazer | GrapheneOS {version} | pixincreate {display_version}', '--notes-file', str(notes))
+                        release = create_draft(tag,
+                            f'Blazer | GrapheneOS {version} | pixincreate {display_version}', notes.read_text())
                         notes.unlink()
                     # Replace partial draft uploads only. Never overwrite published firmware.
                     manifest = attach_sidecars(manifest, release, DIST, gh)
-                    store_manifest(tag, manifest)
+                    store_manifest(tag, manifest, release)
                     gh('release', 'upload', tag, '--repo', REPO, '--clobber',
                        *[str(p) for p in sorted(DIST.iterdir()) if p.name.endswith('.zip')])
                     release = release_by_tag(tag)

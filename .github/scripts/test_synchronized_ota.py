@@ -58,6 +58,7 @@ class PublicationTests(unittest.TestCase):
                          "release_tag": lambda *a: "blazer-test",
                          "attach_sidecars": lambda manifest, *a: manifest,
                          "store_manifest": lambda *a: None,
+                         "create_draft": lambda *a: release,
                          "unify": lambda release, manifest, partner: {**partner, "release": release},
                          "pages": lambda *a: [], "release_by_tag": releases,
                          "existing_manifest": manifests, "DIST": Path(folder),
@@ -205,6 +206,19 @@ class UnifiedReleaseChecks(unittest.TestCase):
         manifest["sidecars"]["test.csig"] = base64.b64encode(b"changed").decode()
         with self.assertRaises(RuntimeError):
             self.unified.checked_sidecar(manifest, "test.csig")
+
+    def test_known_draft_is_used_without_eventual_tag_lookup(self):
+        draft = {**self.release, "draft": True}
+        with patch.object(self.unified, "get_release") as lookup, \
+             patch.object(self.unified, "api", return_value=draft) as api:
+            self.unified.store_manifest(self.tag, self.manifest, draft)
+        lookup.assert_not_called()
+        self.assertEqual(api.call_args.args[:2], ("PATCH", f"repos/{ap.REPO}/releases/123"))
+        for bad in (self.release, {**draft, "tag_name": "different"}):
+            with patch.object(self.unified, "api") as api:
+                with self.assertRaises(RuntimeError):
+                    self.unified.store_manifest(self.tag, self.manifest, bad)
+                api.assert_not_called()
 
     def test_combined_manifest_accepts_github_editor_line_endings(self):
         body = self.unified.MARKER + json.dumps(self.manifest) + "\n-->"
