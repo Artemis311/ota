@@ -37,6 +37,86 @@ def create_draft(tag, title, notes):
         "draft": True, "name": title, "body": notes})
 
 
+def upload_asset(release, path, meta):
+    path = Path(path)
+    if not path.name.endswith(".zip"):
+        raise RuntimeError("Only OTA ZIP attachments may be uploaded")
+    with path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    if path.stat().st_size != meta["size"] or digest != meta["sha256"]:
+        raise RuntimeError("OTA upload input checksum mismatch")
+    existing = next((a for a in release["assets"] if a["name"] == path.name), None)
+    if existing:
+        if (existing.get("state") == "uploaded" and existing.get("digest") == "sha256:" + digest
+                and existing["size"] == meta["size"]):
+            return
+        if not release["draft"]:
+            raise RuntimeError("Refusing to replace published firmware")
+        api("DELETE", f"repos/{REPO}/releases/assets/{existing['id']}")
+    url = release["upload_url"].split("{", 1)[0]
+    if url != f"https://uploads.github.com/repos/{REPO}/releases/{release['id']}/assets":
+        raise RuntimeError("Unexpected ZIP upload destination")
+    env = os.environ.copy()
+    env["GH_TOKEN"] = env.get("GITHUB_TOKEN") or env["GH_TOKEN"]
+    result = subprocess.run(["gh", "api", "--method", "POST",
+        url + "?name=" + urllib.parse.quote(path.name, safe=""),
+        "--header", "Content-Type: application/octet-stream", "--input", str(path), "--silent"],
+        env=env, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError("ZIP upload failed: " + result.stderr.strip())
+
+
+def upload_zip_assets(release, manifest, dist):
+    if not release["draft"]:
+        raise RuntimeError("Initial ZIP upload requires a draft")
+    for name in manifest["flavors"].values():
+        if Path(name).name != name:
+            raise RuntimeError("Invalid OTA filename")
+        upload_asset(release, Path(dist) / name, manifest["files"][name])
+    return api("GET", f"repos/{REPO}/releases/{release['id']}")
+
+
+def set_public(release, public):
+    return api("PATCH", f"repos/{REPO}/releases/{release['id']}", {
+        "draft": not public, "prerelease": False,
+        "make_latest": "true" if public else "false"})
+
+
+def reuse_magisk(version, magisk, dist, read_manifest, builder_commit):
+    # APatch-only updates retain the exact previously verified Magisk/rootless bytes.
+    source = get_release(f"blazer-{version}-pixin-{magisk['apk_sha256'][:12]}")
+    if not source or source["draft"]:
+        return None
+    manifest = read_manifest(source, version)
+    if (not manifest or manifest.get("builder_commit") != builder_commit or
+            manifest.get("magisk", {}).get("apk_sha256") != magisk["apk_sha256"]):
+        return None
+    manifest = copy.deepcopy(manifest)
+    manifest.pop("replaced_releases", None)
+    env = os.environ.copy()
+    env["GH_TOKEN"] = env.get("GITHUB_TOKEN") or env["GH_TOKEN"]
+    def small_download(*args):
+        return subprocess.run(["gh", *args], env=env, check=True, capture_output=True).stdout
+    manifest = attach_sidecars(manifest, source, dist, small_download)
+    destination = Path(dist)
+    destination.mkdir(exist_ok=True)
+    for name in manifest["flavors"].values():
+        if Path(name).name != name:
+            raise RuntimeError("Unsafe reusable OTA filename")
+        asset = next(a for a in source["assets"] if a["name"] == name)
+        path = destination / name
+        with path.open("wb") as stream:
+            subprocess.run(["gh", "api", f"repos/{REPO}/releases/assets/{asset['id']}",
+                "-H", "Accept: application/octet-stream"], env=env, stdout=stream, check=True)
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        meta = manifest["files"][name]
+        if path.stat().st_size != meta["size"] or digest != meta["sha256"]:
+            raise RuntimeError("Reusable OTA ZIP checksum mismatch")
+    print("Reused exact verified Magisk and rootless OTA ZIPs for APatch-only update", flush=True)
+    return manifest
+
+
 def store_manifest(tag, manifest, release=None):
     release = release or get_release(tag)
     if not release or not release["draft"] or release.get("tag_name") != tag:
@@ -137,8 +217,7 @@ def unify(release, manifest, partner):
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if destination.stat().st_size != meta["size"] or digest != meta["sha256"]:
             raise RuntimeError("APatch transfer checksum mismatch")
-        subprocess.run(["gh", "release", "upload", release["tag_name"], "--repo", REPO,
-                        str(destination)], env=env, check=True)
+        upload_asset(release, destination, meta)
     previous = manifest_body(release.get("body", "")) or {}
     replaced = previous.get("replaced_releases", [])
     if (source["id"] != release["id"] and source["id"] not in replaced
@@ -147,7 +226,7 @@ def unify(release, manifest, partner):
     updated = api("PATCH", f"repos/{REPO}/releases/{release['id']}", {
         "name": f"Blazer | GrapheneOS {manifest['grapheneos']} | APatch + pixincreate + Rootless",
         "body": body(manifest, partner, replaced),
-        "prerelease": False, "make_latest": "true",
+        "prerelease": False, "make_latest": "false" if release["draft"] else "true",
     })
     result = {**partner, "release": updated}
     validate_release(updated, partner["expected"], partner["manifest"])

@@ -107,7 +107,8 @@ jobs:
         from apatch_sync import stage_apatch, publish_apatch, rollback_apatch
         from apatch_feed import prepare_feed, write_feed
         from unified_release import (MARKER as OTA_MARKER, manifest_body, checked_sidecar,
-                                     attach_sidecars, store_manifest, create_draft, release_tag, unify)
+                                     attach_sidecars, store_manifest, create_draft, release_tag, unify,
+                                     upload_zip_assets, set_public, reuse_magisk)
 
         REPO = os.environ.get('GITHUB_REPOSITORY', '')
         PIXIN = 'pixincreate/Magisk'
@@ -466,7 +467,11 @@ jobs:
                 print('This exact OS + pixincreate APK is complete; checking feed and Pages only.', flush=True)
             else:
                 if manifest is None:
-                    manifest = build(version, selected_magisk)
+                    manifest = reuse_magisk(version, selected_magisk[1], DIST, existing_manifest, PIN) if publish else None
+                    if manifest is None:
+                        manifest = build(version, selected_magisk)
+                    else:
+                        output('built', 'true')
                     if not publish:
                         stage_apatch(version, False)
                         print('Both test builds verified; nothing published.', flush=True)
@@ -480,9 +485,7 @@ jobs:
                     # Replace partial draft uploads only. Never overwrite published firmware.
                     manifest = attach_sidecars(manifest, release, DIST, gh)
                     store_manifest(tag, manifest, release)
-                    gh('release', 'upload', tag, '--repo', REPO, '--clobber',
-                       *[str(p) for p in sorted(DIST.iterdir()) if p.name.endswith('.zip')])
-                    release = release_by_tag(tag)
+                    release = upload_zip_assets(release, manifest, DIST)
                     manifest = existing_manifest(release, version)
                     if manifest is None:
                         raise RuntimeError('Release upload verification failed; draft retained for retry')
@@ -497,12 +500,12 @@ jobs:
             newly_published_magisk = bool(release['draft'])
             try:
                 if newly_published_magisk:
-                    gh('release', 'edit', tag, '--repo', REPO, '--draft=false')
+                    set_public(release, True)
                 publish_apatch(partner)
             except Exception:
                 # Never re-draft releases that were already public before this run.
                 if newly_published_magisk:
-                    gh('release', 'edit', tag, '--repo', REPO, '--draft=true')
+                    set_public(release, False)
                 rollback_apatch(partner)
                 raise
             sync_feed(manifest, tag, apatch_metadata)

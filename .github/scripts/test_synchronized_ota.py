@@ -59,6 +59,9 @@ class PublicationTests(unittest.TestCase):
                          "attach_sidecars": lambda manifest, *a: manifest,
                          "store_manifest": lambda *a: None,
                          "create_draft": lambda *a: release,
+                         "reuse_magisk": lambda *a: None,
+                         "upload_zip_assets": lambda release, *a: events.append("upload-magisk") or release,
+                         "set_public": lambda release, public: events.append("publish-magisk" if public else "rollback-magisk"),
                          "unify": lambda release, manifest, partner: {**partner, "release": release},
                          "pages": lambda *a: [], "release_by_tag": releases,
                          "existing_manifest": manifests, "DIST": Path(folder),
@@ -219,6 +222,56 @@ class UnifiedReleaseChecks(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.unified.store_manifest(self.tag, self.manifest, bad)
                 api.assert_not_called()
+
+    def test_zip_upload_uses_draft_id_and_refuses_changed_published_firmware(self):
+        import hashlib
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "blazer-test.zip"
+            path.write_bytes(b"verified ZIP")
+            meta = {"size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            draft = {"id": 123, "draft": True, "assets": [],
+                     "upload_url": f"https://uploads.github.com/repos/{ap.REPO}/releases/123/assets{{?name,label}}"}
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "test"}), \
+                 patch.object(self.unified.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run:
+                self.unified.upload_asset(draft, path, meta)
+            command = run.call_args.args[0]
+            self.assertIn(f"https://uploads.github.com/repos/{ap.REPO}/releases/123/assets?name=blazer-test.zip", command)
+            self.assertNotIn("release", command)
+            published = {**draft, "draft": False, "assets": [{"name": path.name, "digest": "sha256:" + "f" * 64, "size": meta["size"]}]}
+            with patch.object(self.unified.subprocess, "run") as run, patch.object(self.unified, "api") as api:
+                with self.assertRaisesRegex(RuntimeError, "published firmware"):
+                    self.unified.upload_asset(published, path, meta)
+                run.assert_not_called()
+                api.assert_not_called()
+
+    def test_apatch_only_update_reuses_verified_magisk_and_rootless_bytes(self):
+        import base64, hashlib
+        from types import SimpleNamespace
+        manifest = copy.deepcopy(self.manifest)
+        manifest.update(builder_commit="builder", magisk={"apk_sha256": "c" * 64}, sidecars={})
+        files = {}
+        source = copy.deepcopy(self.release)
+        source["assets"] = []
+        for index, name in enumerate(manifest["flavors"].values()):
+            data = ("ZIP " + name).encode()
+            files[str(index)] = data
+            manifest["files"][name] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            manifest["files"][name + ".csig"] = {"size": 6, "sha256": hashlib.sha256(b"signed").hexdigest()}
+            manifest["sidecars"][name + ".csig"] = base64.b64encode(b"signed").decode()
+            source["assets"].append({"name": name, "id": index})
+        def download(command, **kwargs):
+            asset_id = command[2].rsplit("/", 1)[1]
+            kwargs["stdout"].write(files[asset_id])
+            return SimpleNamespace(returncode=0)
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"GITHUB_TOKEN": "test"}), \
+             patch.object(self.unified, "get_release", return_value=source), \
+             patch.object(self.unified.subprocess, "run", side_effect=download):
+            result = self.unified.reuse_magisk(self.version, manifest["magisk"], folder,
+                                               lambda *a: manifest, "builder")
+            self.assertEqual(result["files"], manifest["files"])
+            for index, name in enumerate(manifest["flavors"].values()):
+                self.assertEqual((Path(folder) / name).read_bytes(), files[str(index)])
 
     def test_combined_manifest_accepts_github_editor_line_endings(self):
         body = self.unified.MARKER + json.dumps(self.manifest) + "\n-->"
